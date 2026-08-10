@@ -1,0 +1,36 @@
+FROM itmicus/cmdbuild:4.2.0 AS vendor-libs
+
+FROM maven:3.9.9-eclipse-temurin-17 AS build
+ARG CMDBUILD_SOURCE_URL=https://sourceforge.net/projects/cmdbuild/files/4.2.0/cmdbuild-4.2.0-src.zip/download
+ARG CMDBUILD_SOURCE_SHA256=7d9e08fc9674bc241b8b35d09183ba04e7d5d9024dba182acfde6cfdb5704f61
+WORKDIR /src
+RUN apt-get update && apt-get install -y --no-install-recommends curl patch unzip && rm -rf /var/lib/apt/lists/*
+COPY patches/cmdbuild-4.2.0-bearer.patch /tmp/cmdbuild-4.2.0-bearer.patch
+RUN curl --fail --location --retry 3 "$CMDBUILD_SOURCE_URL" -o /tmp/cmdbuild-4.2.0-src.zip \
+    && echo "$CMDBUILD_SOURCE_SHA256  /tmp/cmdbuild-4.2.0-src.zip" | sha256sum -c - \
+    && unzip -q /tmp/cmdbuild-4.2.0-src.zip -d /src \
+    && patch -p1 -d /src < /tmp/cmdbuild-4.2.0-bearer.patch \
+    && rm -f /tmp/cmdbuild-4.2.0-src.zip /tmp/cmdbuild-4.2.0-bearer.patch
+# The fork changes backend authentication only. Retain the pinned stock UI
+# rather than requiring the unavailable proprietary Sencha Cmd toolchain.
+COPY --from=vendor-libs /usr/local/tomcat/webapps/cmdbuild/ui/ ./ui/build/production/CMDBuildUI/
+COPY --from=vendor-libs /usr/local/tomcat/webapps/cmdbuild/WEB-INF/lib/java-saml-3.9.0.jar /opt/vendor-libs/java-saml-3.9.0.jar
+COPY --from=vendor-libs /usr/local/tomcat/webapps/cmdbuild/WEB-INF/lib/java-saml-core-3.9.0.jar /opt/vendor-libs/java-saml-core-3.9.0.jar
+ENV MAVEN_OPTS="--add-opens=java.base/java.lang=ALL-UNNAMED --add-opens=java.base/java.io=ALL-UNNAMED --add-opens=java.base/java.util=ALL-UNNAMED --add-opens=java.base/java.util.regex=ALL-UNNAMED --add-opens=java.base/sun.reflect.generics.reflectiveObjects=ALL-UNNAMED --add-opens=java.base/java.nio=ALL-UNNAMED --add-opens=java.base/java.util.stream=ALL-UNNAMED --add-opens=java.base/java.util.concurrent=ALL-UNNAMED --add-opens=java.rmi/sun.rmi.transport=ALL-UNNAMED"
+RUN --mount=type=cache,target=/root/.m2 mvn org.apache.maven.plugins:maven-install-plugin:3.1.2:install-file -Dfile=/opt/vendor-libs/java-saml-3.9.0.jar -DgroupId=com.onelogin -DartifactId=java-saml -Dversion=3.9.0 -Dpackaging=jar -DgeneratePom=true \
+    && mvn org.apache.maven.plugins:maven-install-plugin:3.1.2:install-file -Dfile=/opt/vendor-libs/java-saml-core-3.9.0.jar -DgroupId=com.onelogin -DartifactId=java-saml-core -Dversion=3.9.0 -Dpackaging=jar -DgeneratePom=true
+RUN --mount=type=cache,target=/root/.m2 mvn -pl cmdbuild -am -Dmaven.test.skip=true package
+
+FROM itmicus/cmdbuild:4.2.0
+USER root
+LABEL org.opencontainers.image.title="cmdbuild-oidc-tf-cmdbuild-bearer" \
+      org.opencontainers.image.version="4.2.0-bearer.1" \
+      org.opencontainers.image.source-sha256="7d9e08fc9674bc241b8b35d09183ba04e7d5d9024dba182acfde6cfdb5704f61"
+RUN rm -rf /usr/local/tomcat/webapps/cmdbuild
+COPY --from=build /src/cmdbuild/target/cmdbuild.war /tmp/cmdbuild.war
+RUN mkdir -p /usr/local/tomcat/webapps/cmdbuild \
+    && cd /usr/local/tomcat/webapps/cmdbuild \
+    && jar -xf /tmp/cmdbuild.war \
+    && rm /tmp/cmdbuild.war \
+    && chown -R tomcat:tomcat /usr/local/tomcat/webapps/cmdbuild
+USER tomcat

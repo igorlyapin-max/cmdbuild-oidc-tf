@@ -1,0 +1,32 @@
+{
+  "name": "cmdbuild-oidc-tf",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc --noEmit -p tsconfig.json",
+    "start:gateway": "node dist/src/gateway.js",
+    "start:bff": "node dist/src/bff.js",
+    "start:collector": "node dist/src/log-collector.js",
+    "dev:gateway": "tsx src/gateway.ts",
+    "dev:bff": "tsx src/bff.ts",
+    "dev:collector": "tsx src/log-collector.ts",
+    "test": "node --import tsx --test tests/*.test.ts",
+    "smoke:mcp": "node scripts/smoke-mcp.mjs"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "1.30.0",
+    "jose": "6.2.8",
+    "zod": "4.3.6"
+  },
+  "devDependencies": {
+    "@types/node": "25.0.0",
+    "playwright-core": "^1.53.1",
+    "tsx": "4.20.6",
+    "typescript": "5.9.3"
+  }
+}

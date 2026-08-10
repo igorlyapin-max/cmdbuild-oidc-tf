@@ -1,0 +1,4 @@
+[mcp_servers.memora_project_cmdbuild_oidc_tf]
+command = "/home/lsk/.local/bin/memora-project"
+args = []
+env = { MEMORA_PROJECT_ID = "cmdbuild-oidc-tf" }

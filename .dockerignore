@@ -1,0 +1,10 @@
+node_modules
+dist
+secrets
+runtime
+logs
+.git
+vendor/cmdbuild-4.2.0/cmdbuild-4.2.0-src.zip
+vendor/cmdbuild-4.2.0/source/**/target
+vendor/
+artifacts/

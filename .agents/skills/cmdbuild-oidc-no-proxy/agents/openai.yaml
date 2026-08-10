@@ -1,0 +1,4 @@
+interface:
+  display_name: "CMDBuild OIDC No Proxy"
+  short_description: "Проверка CMDBuild OIDC без прокси"
+  default_prompt: "Use $cmdbuild-oidc-no-proxy to validate direct user access to the CMDBuild API without a reverse proxy."
