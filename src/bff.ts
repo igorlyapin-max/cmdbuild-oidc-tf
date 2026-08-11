@@ -1,9 +1,11 @@
 import { createHash, randomBytes, randomUUID } from 'node:crypto';
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
-import { createRemoteJWKSet, decodeJwt, jwtVerify } from 'jose';
+import { decodeJwt, jwtVerify } from 'jose';
 import { loadBffConfig, isPlaceholder, type BffConfig } from './config.js';
-import { hostAllowed, json, requestUrl, text } from './http.js';
-import { assertLogSinkHealthy, fingerprint, Logger } from './logger.js';
+import { currentUser, CmdbuildApiError, forwardedTokenFingerprint, readDemoCard, readDemoCards, updateDemoCard } from './cmdbuild.js';
+import { canWrite, groupsFromClaim, remoteJwks, roleFor, type Role } from './identity.js';
+import { hostAllowed, json, readJson, requestUrl, text } from './http.js';
+import { assertLogSinkHealthy, fingerprint, Logger, logSinkReady } from './logger.js';
 
 interface OidcMetadata {
   authorization_endpoint: string;
@@ -21,14 +23,18 @@ interface BrowserSession {
   accessToken: string;
   idToken: string;
   subjectHash: string;
+  role?: Role;
   expiresAt: number;
 }
 
 const pendingLogins = new Map<string, PendingLogin>();
 const browserSessions = new Map<string, BrowserSession>();
+const loginAttempts = new Map<string, { startedAt: number; count: number }>();
+const LOGIN_WINDOW_MS = 60_000;
+const MAX_LOGIN_TRACKED_CLIENTS = 4096;
 
 function configured(config: BffConfig): boolean {
-  return !isPlaceholder(config.clientId) && !isPlaceholder(config.oidcAudience);
+  return !isPlaceholder(config.clientId) && !isPlaceholder(config.resourceAudience);
 }
 
 function cookieValue(request: IncomingMessage, name: string): string | undefined {
@@ -49,12 +55,13 @@ function sha256base64url(value: string): string {
   return createHash('sha256').update(value).digest('base64url');
 }
 
-function authorizationScopes(): string {
+function authorizationScopes(config: BffConfig): string {
   return [
     'openid', 'profile', 'email',
     'urn:zitadel:iam:org:project:role:admin',
     'urn:zitadel:iam:org:project:role:editor',
-    'urn:zitadel:iam:org:project:role:reader'
+    'urn:zitadel:iam:org:project:role:reader',
+    `urn:zitadel:iam:org:project:id:${config.resourceProjectId}:aud`
   ].join(' ');
 }
 
@@ -86,6 +93,22 @@ function clearExpired(): void {
   const now = Date.now();
   for (const [id, pending] of pendingLogins) if (pending.createdAt + 10 * 60_000 < now) pendingLogins.delete(id);
   for (const [id, session] of browserSessions) if (session.expiresAt < now) browserSessions.delete(id);
+  for (const [client, attempt] of loginAttempts) if (attempt.startedAt + LOGIN_WINDOW_MS < now) loginAttempts.delete(client);
+}
+
+function loginAllowed(request: IncomingMessage, config: BffConfig): boolean {
+  const client = request.socket.remoteAddress ?? 'unknown';
+  const now = Date.now();
+  const previous = loginAttempts.get(client);
+  const attempt = !previous || previous.startedAt + LOGIN_WINDOW_MS < now
+    ? { startedAt: now, count: 1 }
+    : { ...previous, count: previous.count + 1 };
+  if (!previous && loginAttempts.size >= MAX_LOGIN_TRACKED_CLIENTS) {
+    const oldest = loginAttempts.keys().next().value;
+    if (oldest) loginAttempts.delete(oldest);
+  }
+  loginAttempts.set(client, attempt);
+  return attempt.count <= config.loginRateLimitPerMinute;
 }
 
 async function oidcMetadata(config: BffConfig): Promise<OidcMetadata> {
@@ -94,6 +117,25 @@ async function oidcMetadata(config: BffConfig): Promise<OidcMetadata> {
   const metadata = await response.json() as Partial<OidcMetadata>;
   if (!metadata.authorization_endpoint || !metadata.token_endpoint) throw new Error('oidc_discovery_incomplete');
   return { authorization_endpoint: metadata.authorization_endpoint, token_endpoint: metadata.token_endpoint };
+}
+
+async function roleForSession(config: BffConfig, payload: Record<string, unknown>, accessToken: string): Promise<Role | undefined> {
+  const directRole = roleFor(groupsFromClaim(payload[config.groupClaimName]), config);
+  if (directRole) return directRole;
+  const subject = payload.sub;
+  if (typeof subject !== 'string') return undefined;
+  try {
+    const response = await fetch(`${config.oidcIssuer}/oidc/v1/userinfo`, {
+      headers: { authorization: `Bearer ${accessToken}` },
+      signal: AbortSignal.timeout(5_000)
+    });
+    if (!response.ok) return undefined;
+    const userInfo = await response.json() as Record<string, unknown>;
+    if (userInfo.sub !== subject) return undefined;
+    return roleFor(groupsFromClaim(userInfo[config.groupClaimName]), config);
+  } catch {
+    return undefined;
+  }
 }
 
 async function exchangeCode(config: BffConfig, metadata: OidcMetadata, code: string, pending: PendingLogin): Promise<BrowserSession> {
@@ -120,13 +162,14 @@ async function exchangeCode(config: BffConfig, metadata: OidcMetadata, code: str
   if (!response.ok) throw new Error('oidc_code_exchange_failed');
   const token = await response.json() as { access_token?: string; id_token?: string; expires_in?: number };
   if (!token.access_token || !token.id_token) throw new Error('oidc_token_response_incomplete');
-  const jwks = createRemoteJWKSet(new URL(config.oidcJwksUri));
+  const jwks = remoteJwks(config.oidcJwksUri);
   const { payload } = await jwtVerify(token.id_token, jwks, { issuer: config.oidcIssuer, audience: config.clientId });
   if (payload.nonce !== pending.nonce || typeof payload.sub !== 'string') throw new Error('oidc_id_token_validation_failed');
   return {
     accessToken: token.access_token,
     idToken: token.id_token,
     subjectHash: fingerprint(payload.sub),
+    role: await roleForSession(config, payload, token.access_token),
     expiresAt: Date.now() + Math.max(60, Math.min(token.expires_in ?? 3600, 3600)) * 1000
   };
 }
@@ -152,67 +195,44 @@ async function userInfoAuthorizationSummary(config: BffConfig, accessToken: stri
   return { status: response.status, role_claims: Object.fromEntries(roleClaimNames.map((name) => [name, claims[name]])) };
 }
 
-async function cmdbuildWhoAmI(config: BffConfig, accessToken: string): Promise<{ status: number; body: unknown }> {
-  const response = await fetch(`${config.cmdbuildBaseUrl}/cmdbuild/services/rest/v3/sessions/current`, {
-    headers: { accept: 'application/json', authorization: `Bearer ${accessToken}` },
-    signal: AbortSignal.timeout(10_000)
-  });
-  const contentType = response.headers.get('content-type') ?? '';
-  return {
-    status: response.status,
-    body: contentType.includes('application/json') ? await response.json() : { result: 'non_json_response' }
-  };
+function cmdbuildStatus(error: unknown): number {
+  return error instanceof CmdbuildApiError ? error.status : 502;
 }
 
-async function mcpPost(config: BffConfig, accessToken: string, body: unknown, sessionId?: string): Promise<{ status: number; sessionId?: string; body: unknown }> {
-  const response = await fetch(config.mcpGatewayUrl, {
-    method: 'POST',
-    headers: {
-      accept: 'application/json, text/event-stream',
-      authorization: `Bearer ${accessToken}`,
-      'content-type': 'application/json',
-      'mcp-protocol-version': '2025-03-26',
-      ...(sessionId ? { 'mcp-session-id': sessionId } : {})
-    },
-    body: JSON.stringify(body),
-    signal: AbortSignal.timeout(10_000)
-  });
-  const contentType = response.headers.get('content-type') ?? '';
-  return {
-    status: response.status,
-    sessionId: response.headers.get('mcp-session-id') ?? undefined,
-    body: contentType.includes('application/json') ? await response.json() : { result: 'non_json_response' }
-  };
+function cmdbuildFailure(error: unknown): string {
+  return error instanceof CmdbuildApiError ? error.code : 'cmdbuild_unavailable';
 }
 
-async function mcpReaderWriteCheck(config: BffConfig, accessToken: string): Promise<{ status: number; body: unknown }> {
-  const initialization = await mcpPost(config, accessToken, {
-    jsonrpc: '2.0', id: 1, method: 'initialize',
-    params: { protocolVersion: '2025-03-26', capabilities: {}, clientInfo: { name: 'cmdbuild-oidc-tf-bff', version: '0.1.0' } }
-  });
-  if (initialization.status !== 200 || !initialization.sessionId) {
-    return { status: initialization.status, body: initialization.body };
-  }
-  const sessionId = initialization.sessionId;
-  try {
-    const initialized = await mcpPost(config, accessToken, { jsonrpc: '2.0', method: 'notifications/initialized', params: {} }, sessionId);
-    if (initialized.status < 200 || initialized.status >= 300) return { status: initialized.status, body: initialized.body };
-    const tool = await mcpPost(config, accessToken, {
-      jsonrpc: '2.0', id: 2, method: 'tools/call',
-      params: { name: 'cmdbuild_update_demo_card', arguments: { attribute: 'Description', value: 'authorization-check' } }
-    }, sessionId);
-    return { status: tool.status, body: tool.body };
-  } finally {
-    void fetch(config.mcpGatewayUrl, {
-      method: 'DELETE',
-      headers: { authorization: `Bearer ${accessToken}`, 'mcp-session-id': sessionId },
-      signal: AbortSignal.timeout(5_000)
-    }).catch(() => undefined);
-  }
+function boundedLimit(value: string | null): number | undefined {
+  if (value === null) return 10;
+  if (!/^\d+$/.test(value)) return undefined;
+  const limit = Number(value);
+  return Number.isInteger(limit) && limit >= 1 && limit <= 100 ? limit : undefined;
+}
+
+function writeRequest(value: unknown): { attribute: string; value: string } | undefined {
+  if (!value || typeof value !== 'object') return undefined;
+  const request = value as { attribute?: unknown; value?: unknown };
+  if (typeof request.attribute !== 'string' || typeof request.value !== 'string') return undefined;
+  const attribute = request.attribute.trim();
+  if (!attribute || attribute.length > 80 || !request.value || request.value.length > 500) return undefined;
+  return { attribute, value: request.value };
+}
+
+function sessionFor(request: IncomingMessage): BrowserSession | undefined {
+  const sessionId = cookieValue(request, 'cmdbuild_oidc_tf_session');
+  const session = sessionId ? browserSessions.get(sessionId) : undefined;
+  return session && session.expiresAt >= Date.now() ? session : undefined;
+}
+
+function requireRole(response: ServerResponse, session: BrowserSession): session is BrowserSession & { role: Role } {
+  if (session.role) return true;
+  json(response, 403, { error: 'group_not_allowed' });
+  return false;
 }
 
 function html(): string {
-  return `<!doctype html><html lang="en"><meta charset="utf-8"><title>cmdbuild-oidc-tf CMDBuild OIDC BFF</title><body><h1>CMDBuild OIDC BFF analogue</h1><p>This direct service has no reverse proxy. It stores tokens server-side and forwards only the authenticated user's access token to CMDBuild.</p><p><a href="/login">Sign in with ZITADEL</a> · <a href="/api/oidc/authorization-summary">View redacted OIDC authorization summary</a> · <a href="/api/cmdbuild/whoami">Test CMDBuild API</a> · <a href="/api/mcp/reader-write-check">Test reader MCP write deny</a> · <a href="/logout">Sign out</a></p></body></html>`;
+  return `<!doctype html><html lang="en"><meta charset="utf-8"><title>cmdbuild-oidc-tf CMDBuild OIDC BFF</title><body><h1>CMDBuild OIDC BFF analogue</h1><p>This direct service has no reverse proxy. It stores tokens server-side and forwards only the authenticated user's access token to CMDBuild.</p><p><a href="/login">Sign in with ZITADEL</a> · <a href="/api/oidc/authorization-summary">View redacted OIDC authorization summary</a> · <a href="/api/cmdbuild/whoami">Test CMDBuild API</a> · <a href="/api/cmdbuild/demo-cards">Read demo cards</a> · <a href="/logout">Sign out</a></p></body></html>`;
 }
 
 async function handle(request: IncomingMessage, response: ServerResponse, config: BffConfig): Promise<void> {
@@ -222,13 +242,14 @@ async function handle(request: IncomingMessage, response: ServerResponse, config
   }
   clearExpired();
   const url = requestUrl(request);
-  const logger = new Logger('cmdb-oidc-bff', config.logSinkUrl, config.diagnosticLevel);
+  const logger = new Logger('cmdb-oidc-bff', config.logSinkUrl, config.logSinkHmacKey, config.diagnosticLevel);
   if (request.method === 'GET' && url.pathname === '/health') {
     json(response, 200, { status: 'ok', service: 'cmdb-oidc-bff' });
     return;
   }
   if (request.method === 'GET' && url.pathname === '/ready') {
-    json(response, configured(config) ? 200 : 503, { status: configured(config) ? 'ready' : 'not_ready', oidc_configured: configured(config) });
+    const ready = configured(config) && logSinkReady(config.logSinkUrl);
+    json(response, ready ? 200 : 503, { status: ready ? 'ready' : 'not_ready', oidc_configured: configured(config), log_sink_ready: logSinkReady(config.logSinkUrl) });
     return;
   }
   if (request.method === 'GET' && url.pathname === '/') {
@@ -239,6 +260,14 @@ async function handle(request: IncomingMessage, response: ServerResponse, config
   if (request.method === 'GET' && url.pathname === '/login') {
     if (!configured(config)) {
       json(response, 503, { error: 'bff_oidc_client_not_configured' });
+      return;
+    }
+    if (!loginAllowed(request, config)) {
+      json(response, 429, { error: 'login_rate_limited' }, { 'retry-after': '60' });
+      return;
+    }
+    if (pendingLogins.size >= config.maxPendingLogins) {
+      json(response, 429, { error: 'login_capacity_reached' });
       return;
     }
     try {
@@ -254,7 +283,7 @@ async function handle(request: IncomingMessage, response: ServerResponse, config
         client_id: config.clientId,
         redirect_uri: config.redirectUri,
         response_type: 'code',
-        scope: authorizationScopes(),
+        scope: authorizationScopes(config),
         state,
         nonce,
         code_challenge: sha256base64url(verifier),
@@ -278,6 +307,10 @@ async function handle(request: IncomingMessage, response: ServerResponse, config
       return;
     }
     try {
+      if (browserSessions.size >= config.maxBrowserSessions) {
+        json(response, 429, { error: 'browser_session_capacity_reached' });
+        return;
+      }
       const session = await exchangeCode(config, await oidcMetadata(config), code, pending);
       const sessionId = randomUUID();
       browserSessions.set(sessionId, session);
@@ -297,19 +330,102 @@ async function handle(request: IncomingMessage, response: ServerResponse, config
     return;
   }
   if (request.method === 'GET' && url.pathname === '/api/cmdbuild/whoami') {
-    const sessionId = cookieValue(request, 'cmdbuild_oidc_tf_session');
-    const session = sessionId ? browserSessions.get(sessionId) : undefined;
-    if (!session || session.expiresAt < Date.now()) {
+    const session = sessionFor(request);
+    if (!session) {
       json(response, 401, { error: 'authentication_required' });
       return;
     }
+    if (!requireRole(response, session)) return;
     try {
-      const result = await cmdbuildWhoAmI(config, session.accessToken);
-      logger.info('cmdbuild.user_token_forwarded', { subject_hash: session.subjectHash, cmdbuild_status: result.status });
-      json(response, result.status, result.body);
+      const result = await currentUser(config, session.accessToken);
+      logger.info('cmdbuild.user_token_forwarded', {
+        subject_hash: session.subjectHash,
+        role: session.role,
+        forwarded_credential_fingerprint: forwardedTokenFingerprint(session.accessToken)
+      });
+      json(response, 200, result);
+    } catch (error) {
+      const status = cmdbuildStatus(error);
+      logger.warn('cmdbuild.user_token_forward_failed', { subject_hash: session.subjectHash, role: session.role, status, code: cmdbuildFailure(error) });
+      json(response, status, { error: cmdbuildFailure(error) });
+    }
+    return;
+  }
+  if (request.method === 'GET' && url.pathname === '/api/cmdbuild/demo-cards') {
+    const session = sessionFor(request);
+    const limit = boundedLimit(url.searchParams.get('limit'));
+    if (!session) {
+      json(response, 401, { error: 'authentication_required' });
+      return;
+    }
+    if (!requireRole(response, session)) return;
+    if (!limit) {
+      json(response, 400, { error: 'invalid_demo_card_limit' });
+      return;
+    }
+    try {
+      const result = await readDemoCards(config, session.accessToken, limit);
+      logger.info('cmdbuild.demo.read.success', { subject_hash: session.subjectHash, role: session.role, class_name: config.demoClass, limit });
+      json(response, 200, result);
+    } catch (error) {
+      const status = cmdbuildStatus(error);
+      logger.warn('cmdbuild.demo.read.failed', { subject_hash: session.subjectHash, role: session.role, status, code: cmdbuildFailure(error) });
+      json(response, status, { error: cmdbuildFailure(error) });
+    }
+    return;
+  }
+  if (request.method === 'GET' && url.pathname === '/api/cmdbuild/demo-card') {
+    const session = sessionFor(request);
+    if (!session) {
+      json(response, 401, { error: 'authentication_required' });
+      return;
+    }
+    if (!requireRole(response, session)) return;
+    try {
+      const result = await readDemoCard(config, session.accessToken);
+      logger.info('cmdbuild.demo.card.read.success', { subject_hash: session.subjectHash, role: session.role, class_name: config.demoClass });
+      json(response, 200, result);
+    } catch (error) {
+      const status = cmdbuildStatus(error);
+      logger.warn('cmdbuild.demo.card.read.failed', { subject_hash: session.subjectHash, role: session.role, status, code: cmdbuildFailure(error) });
+      json(response, status, { error: cmdbuildFailure(error) });
+    }
+    return;
+  }
+  if (request.method === 'PUT' && url.pathname === '/api/cmdbuild/demo-card') {
+    const session = sessionFor(request);
+    if (!session) {
+      json(response, 401, { error: 'authentication_required' });
+      return;
+    }
+    if (!requireRole(response, session)) return;
+    if (!config.pocWriteEnabled) {
+      json(response, 403, { error: 'bff_poc_write_disabled' });
+      return;
+    }
+    if (!canWrite(session.role)) {
+      logger.warn('cmdbuild.demo.write.denied', { subject_hash: session.subjectHash, role: session.role, code: 'group_does_not_allow_write' });
+      json(response, 403, { error: 'group_does_not_allow_write' });
+      return;
+    }
+    let write: { attribute: string; value: string } | undefined;
+    try {
+      write = writeRequest(await readJson(request));
     } catch {
-      logger.error('cmdbuild.user_token_forward_failed');
-      json(response, 502, { error: 'cmdbuild_unavailable' });
+      write = undefined;
+    }
+    if (!write) {
+      json(response, 400, { error: 'invalid_demo_card_write' });
+      return;
+    }
+    try {
+      const result = await updateDemoCard(config, session.accessToken, write.attribute, write.value);
+      logger.info('cmdbuild.demo.write.success', { subject_hash: session.subjectHash, role: session.role, class_name: config.demoClass, attribute: write.attribute });
+      json(response, 200, result);
+    } catch (error) {
+      const status = cmdbuildStatus(error);
+      logger.warn('cmdbuild.demo.write.failed', { subject_hash: session.subjectHash, role: session.role, status, code: cmdbuildFailure(error), attribute: write.attribute });
+      json(response, status, { error: cmdbuildFailure(error) });
     }
     return;
   }
@@ -327,23 +443,6 @@ async function handle(request: IncomingMessage, response: ServerResponse, config
     });
     return;
   }
-  if (request.method === 'GET' && url.pathname === '/api/mcp/reader-write-check') {
-    const sessionId = cookieValue(request, 'cmdbuild_oidc_tf_session');
-    const session = sessionId ? browserSessions.get(sessionId) : undefined;
-    if (!session || session.expiresAt < Date.now()) {
-      json(response, 401, { error: 'authentication_required' });
-      return;
-    }
-    try {
-      const result = await mcpReaderWriteCheck(config, session.accessToken);
-      logger.info('mcp.user_token_forwarded', { subject_hash: session.subjectHash, mcp_status: result.status, tool: 'cmdbuild_update_demo_card' });
-      json(response, result.status, result.body);
-    } catch {
-      logger.error('mcp.user_token_forward_failed');
-      json(response, 502, { error: 'mcp_gateway_unavailable' });
-    }
-    return;
-  }
   if (request.method === 'GET' && url.pathname === '/logout') {
     const sessionId = cookieValue(request, 'cmdbuild_oidc_tf_session');
     if (sessionId) browserSessions.delete(sessionId);
@@ -357,7 +456,7 @@ async function handle(request: IncomingMessage, response: ServerResponse, config
 async function main(): Promise<void> {
   const config = loadBffConfig();
   await assertLogSinkHealthy(config.logSinkUrl);
-  const logger = new Logger('cmdb-oidc-bff', config.logSinkUrl, config.diagnosticLevel);
+  const logger = new Logger('cmdb-oidc-bff', config.logSinkUrl, config.logSinkHmacKey, config.diagnosticLevel);
   const server = createServer((request, response) => void handle(request, response, config));
   server.requestTimeout = 15_000;
   server.headersTimeout = 20_000;

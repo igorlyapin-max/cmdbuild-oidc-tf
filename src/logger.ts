@@ -1,10 +1,11 @@
-import { createHash, randomUUID } from 'node:crypto';
+import { createHash, createHmac, randomUUID } from 'node:crypto';
 import type { DiagnosticLevel } from './config.js';
 
 type LogValue = string | number | boolean | null | undefined;
 type LogFields = Record<string, LogValue | readonly string[]>;
 
 const SENSITIVE_KEY = /(authorization|token|secret|password|cookie|code_verifier|id_token|access_token)/i;
+const sinkFailures = new Map<string, number>();
 
 function redact(value: unknown, key?: string): unknown {
   if (key && SENSITIVE_KEY.test(key)) return '[REDACTED]';
@@ -25,6 +26,7 @@ export class Logger {
   constructor(
     private readonly service: string,
     private readonly sinkUrl: string,
+    private readonly sinkHmacKey: string,
     private readonly level: DiagnosticLevel
   ) {}
 
@@ -58,17 +60,28 @@ export class Logger {
   }
 
   private async deliver(record: Record<string, unknown>): Promise<void> {
+    const body = JSON.stringify(record);
     try {
-      await fetch(this.sinkUrl, {
+      const response = await fetch(this.sinkUrl, {
         method: 'POST',
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify(record),
+        headers: {
+          'content-type': 'application/json',
+          'x-log-signature': createHmac('sha256', this.sinkHmacKey).update(body).digest('hex')
+        },
+        body,
         signal: AbortSignal.timeout(1500)
       });
+      if (!response.ok) throw new Error(`log sink returned ${response.status}`);
+      sinkFailures.set(this.sinkUrl, 0);
     } catch {
       // The structured stdout record is retained. Never recurse by logging a sink failure.
+      sinkFailures.set(this.sinkUrl, (sinkFailures.get(this.sinkUrl) ?? 0) + 1);
     }
   }
+}
+
+export function logSinkReady(logSinkUrl: string): boolean {
+  return (sinkFailures.get(logSinkUrl) ?? 0) < 3;
 }
 
 export async function assertLogSinkHealthy(logSinkUrl: string): Promise<void> {

@@ -3,11 +3,11 @@ import { createServer, type IncomingMessage, type ServerResponse } from 'node:ht
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
 import * as z from 'zod/v4';
-import { loadGatewayConfig, isPlaceholder, type GatewayConfig } from './config.js';
+import { loadGatewayConfig, type GatewayConfig } from './config.js';
 import { currentUser, CmdbuildApiError, forwardedTokenFingerprint, readDemoCards, updateDemoCard } from './cmdbuild.js';
 import { hostAllowed, json, readJson, text } from './http.js';
 import { authorizationHeader, canWrite, TokenValidationError, validateUserToken, type Principal } from './identity.js';
-import { assertLogSinkHealthy, fingerprint, Logger } from './logger.js';
+import { assertLogSinkHealthy, fingerprint, Logger, logSinkReady } from './logger.js';
 
 type ToolResult = { content: Array<{ type: 'text'; text: string }>; isError?: boolean };
 
@@ -45,7 +45,11 @@ function buildMcpServer(config: GatewayConfig, principal: Principal, logger: Log
     async () => {
       try {
         const response = await currentUser(config, principal.token);
-        logger.info('cmdbuild.whoami.success', { subject_hash: fingerprint(principal.subject), role: principal.role, forwarded_token_hash: forwardedTokenFingerprint(principal.token) });
+        logger.info('cmdbuild.whoami.success', {
+          subject_hash: fingerprint(principal.subject),
+          role: principal.role,
+          forwarded_credential_fingerprint: forwardedTokenFingerprint(principal.token)
+        });
         return result(response);
       } catch (error) {
         return cmdbuildFailure(error, logger);
@@ -114,7 +118,7 @@ function resourceMetadata(config: GatewayConfig): Record<string, unknown> {
   return {
     resource: `${config.publicUrl}/mcp`,
     authorization_servers: [config.oidcIssuer],
-    scopes_supported: ['openid', 'profile', 'email'],
+    scopes_supported: ['openid', 'profile', 'email', `urn:zitadel:iam:org:project:id:${config.resourceProjectId}:aud`],
     bearer_methods_supported: ['header'],
     resource_name: 'cmdbuild-oidc-tf CMDBuild MCP gateway'
   };
@@ -146,12 +150,21 @@ function clearExpiredSessions(): void {
   }
 }
 
+function canOpenSession(config: GatewayConfig, subject: string): boolean {
+  if (mcpSessions.size >= config.maxMcpSessions) return false;
+  let subjectSessions = 0;
+  for (const session of mcpSessions.values()) {
+    if (session.subject === subject) subjectSessions += 1;
+  }
+  return subjectSessions < config.maxMcpSessionsPerSubject;
+}
+
 function writeMcpSessionError(response: ServerResponse, status: number, message: string): void {
   json(response, status, { jsonrpc: '2.0', error: { code: -32000, message }, id: null });
 }
 
 async function handleMcp(request: IncomingMessage, response: ServerResponse, config: GatewayConfig): Promise<void> {
-  const logger = new Logger('mcp-gateway', config.logSinkUrl, config.diagnosticLevel);
+  const logger = new Logger('mcp-gateway', config.logSinkUrl, config.logSinkHmacKey, config.diagnosticLevel);
   let principal: Principal;
   try {
     const token = authorizationHeader(request.headers);
@@ -187,6 +200,10 @@ async function handleMcp(request: IncomingMessage, response: ServerResponse, con
 
     if (!isInitializationRequest(body)) {
       writeMcpSessionError(response, 400, 'MCP session initialization is required');
+      return;
+    }
+    if (!canOpenSession(config, principal.subject)) {
+      writeMcpSessionError(response, 429, 'MCP session capacity reached');
       return;
     }
 
@@ -248,8 +265,8 @@ async function requestHandler(request: IncomingMessage, response: ServerResponse
     return;
   }
   if (request.method === 'GET' && pathname === '/ready') {
-    const configured = !isPlaceholder(config.oidcAudience);
-    json(response, configured ? 200 : 503, { status: configured ? 'ready' : 'not_ready', oidc_audience_configured: configured });
+    const ready = Boolean(config.resourceAudience) && logSinkReady(config.logSinkUrl);
+    json(response, ready ? 200 : 503, { status: ready ? 'ready' : 'not_ready', resource_audience_configured: Boolean(config.resourceAudience), log_sink_ready: logSinkReady(config.logSinkUrl) });
     return;
   }
   if (request.method === 'GET' && (pathname === '/.well-known/oauth-protected-resource' || pathname === '/.well-known/oauth-protected-resource/mcp')) {
@@ -283,14 +300,24 @@ async function requestHandler(request: IncomingMessage, response: ServerResponse
 async function main(): Promise<void> {
   const config = loadGatewayConfig();
   await assertLogSinkHealthy(config.logSinkUrl);
-  const startupLogger = new Logger('mcp-gateway', config.logSinkUrl, config.diagnosticLevel);
+  const startupLogger = new Logger('mcp-gateway', config.logSinkUrl, config.logSinkHmacKey, config.diagnosticLevel);
   const server = createServer((request, response) => void requestHandler(request, response, config));
   server.requestTimeout = 15_000;
   server.headersTimeout = 20_000;
   server.listen(config.port, '127.0.0.1', () => {
-    startupLogger.info('service.started', { port: config.port, public_url: config.publicUrl, ready: !isPlaceholder(config.oidcAudience) });
+    startupLogger.info('service.started', { port: config.port, public_url: config.publicUrl, ready: true });
   });
-  const shutdown = () => server.close(() => process.exit(0));
+  const cleanupTimer = setInterval(clearExpiredSessions, 60_000);
+  cleanupTimer.unref();
+  const shutdown = () => {
+    clearInterval(cleanupTimer);
+    for (const session of mcpSessions.values()) {
+      void session.transport.close();
+      void session.server.close();
+    }
+    mcpSessions.clear();
+    server.close(() => process.exit(0));
+  };
   process.once('SIGTERM', shutdown);
   process.once('SIGINT', shutdown);
 }

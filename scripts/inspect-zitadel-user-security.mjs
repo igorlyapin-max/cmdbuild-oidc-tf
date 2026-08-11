@@ -11,38 +11,69 @@ const adminUsername = 'openwebui-admin@openwebui.192.168.202.35';
 const adminPassword = readFileSync('/home/lsk/projects/ubuntu/openwebui-zitadel/secrets/zitadel_admin_password', 'utf8').trim();
 const browser = await chromium.launch({ executablePath: '/usr/bin/google-chrome', headless: true, args: ['--no-sandbox'] });
 
+function jwtCandidates(value) {
+  if (typeof value !== 'string') return [];
+  return value.match(/eyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+/g) ?? [];
+}
+
 try {
   const page = await browser.newPage();
   page.setDefaultTimeout(15_000);
-  await page.goto('http://192.168.202.35:8084/ui/console/actions', { waitUntil: 'domcontentloaded' });
-  for (let attempt = 0; attempt < 120; attempt += 1) {
-    if (new URL(page.url()).pathname.startsWith('/ui/v2/login/') && await page.locator('input[name="loginName"]').count()) {
-      const loginName = page.locator('input[name="loginName"]');
-      await loginName.click();
-      await loginName.pressSequentially(adminUsername, { delay: 10 });
-      await loginName.press('Tab');
-      await page.getByRole('button', { name: 'Continue' }).waitFor({ state: 'visible' });
-      await page.waitForTimeout(300);
-      await page.getByRole('button', { name: 'Continue' }).click();
-      const password = page.locator('input[name="password"]');
-      await password.waitFor({ state: 'visible' });
-      await password.fill(adminPassword);
-      await password.press('Tab');
-      await page.getByRole('button', { name: 'Continue' }).click();
-      await page.waitForURL((url) => url.pathname.startsWith('/ui/console/'), { timeout: 20_000 });
-      await page.goto(`http://192.168.202.35:8084/ui/console/users/${userId}`, { waitUntil: 'domcontentloaded' });
-      break;
+  await page.goto('http://192.168.202.35:8084/ui/console/', { waitUntil: 'domcontentloaded' });
+  await page.waitForTimeout(1500);
+  await page.locator('input[name="loginName"]').pressSequentially(adminUsername, { delay: 10 });
+  await page.getByRole('button', { name: 'Continue' }).click();
+  await page.locator('input[name="password"]').fill(adminPassword);
+  await page.getByRole('button', { name: 'Continue' }).click();
+  await page.waitForTimeout(1800);
+  const apiRequests = [];
+  page.on('request', (request) => {
+    const url = new URL(request.url());
+    if (url.origin === 'http://192.168.202.35:8084' && !url.pathname.startsWith('/ui/')) {
+      apiRequests.push({
+        method: request.method(),
+        path: url.pathname,
+        hasAuthorization: Boolean(request.headers().authorization),
+      });
     }
-    await page.waitForTimeout(250);
-  }
+  });
   await page.goto(`http://192.168.202.35:8084/ui/console/users/${userId}`, { waitUntil: 'domcontentloaded' });
+  await page.waitForTimeout(800);
   await page.getByRole('button', { name: 'Password and Security' }).click();
-  await page.locator('button[card-actions]').first().click();
+  await page.getByRole('button', { name: /^Actions/ }).click();
   await page.waitForTimeout(200);
+  const browserStorage = await page.evaluate(() => [
+    ...Object.values(localStorage),
+    ...Object.values(sessionStorage),
+  ]);
+  const tokens = [...new Set(browserStorage.flatMap(jwtCandidates))];
+  const managementUserStatuses = await Promise.all(tokens.map(async (token) => page.evaluate(async ({ id, token }) => {
+    const response = await fetch(`/management/v1/users/${id}`, {
+      headers: { authorization: `Bearer ${token}` },
+    });
+    return response.status;
+  }, { id: userId, token })));
   console.log(JSON.stringify({
     role,
+    managementTokenCandidates: tokens.length,
+    managementUserStatuses,
+    apiRequests: [...new Map(apiRequests.map((request) => [`${request.method}:${request.path}:${request.hasAuthorization}`, request])).values()],
     menuItems: await page.locator('[role="menuitem"]').allTextContents(),
     buttons: await page.locator('.cdk-overlay-pane button').allTextContents(),
+    actionButtons: await page.locator('button').evaluateAll((elements) => elements.map((button) => ({
+      text: button.textContent?.trim(),
+      ariaLabel: button.getAttribute('aria-label'),
+      cardActions: button.hasAttribute('card-actions'),
+      disabled: button.disabled,
+    })).filter((button) => button.text || button.ariaLabel || button.cardActions)),
+    passwordMask: await page.locator('text=*********').evaluateAll((elements) => elements.map((element) => ({
+      tag: element.tagName,
+      className: element.className,
+      role: element.getAttribute('role'),
+      parentTag: element.parentElement?.tagName,
+      parentClassName: element.parentElement?.className,
+      parentRole: element.parentElement?.getAttribute('role'),
+    }))),
     text: (await page.locator('body').innerText()).slice(-1200),
   }));
 } finally {

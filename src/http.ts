@@ -7,7 +7,7 @@ export function hostAllowed(request: IncomingMessage, allowedHosts: Set<string>)
   return Boolean(host && allowedHosts.has(host));
 }
 
-export async function readJson(request: IncomingMessage): Promise<unknown> {
+export async function readRawBody(request: IncomingMessage): Promise<Buffer> {
   const chunks: Buffer[] = [];
   let size = 0;
   for await (const chunk of request) {
@@ -16,8 +16,13 @@ export async function readJson(request: IncomingMessage): Promise<unknown> {
     if (size > MAX_BODY_BYTES) throw new Error('Request body too large');
     chunks.push(buffer);
   }
-  if (chunks.length === 0) return undefined;
-  return JSON.parse(Buffer.concat(chunks).toString('utf8'));
+  return Buffer.concat(chunks);
+}
+
+export async function readJson(request: IncomingMessage): Promise<unknown> {
+  const raw = await readRawBody(request);
+  if (raw.length === 0) return undefined;
+  return JSON.parse(raw.toString('utf8'));
 }
 
 export function json(response: ServerResponse, status: number, value: unknown, headers: Record<string, string> = {}): void {

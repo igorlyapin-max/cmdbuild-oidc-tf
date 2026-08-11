@@ -27,19 +27,54 @@ MCP gateway + BFF -- structured redacted logs --> local log collector :18101 -->
 ## Start
 
 1. Apply the ZITADEL and OpenWebUI setup in the [administrator runbook](docs/administrator-runbook.md). The existing OpenWebUI OIDC client uses `cmdbuild_oidc_tf_groups`; local password login stays disabled.
-2. Keep `secrets/` local. `secrets/cmdbuild_db_password` is generated for this POC. The BFF is a public PKCE client, so `secrets/bff_client_secret` may contain `unconfigured`; a confidential replacement must be `0600`.
-3. Before starting the OAuth-configured CMDBuild service, start `oidc-edge` and provision the dedicated client. This creates local `0600` files `secrets/cmdbuild_oidc_tf_client_id` and `secrets/cmdbuild_oidc_tf_client_secret`; neither is tracked or printed:
+2. Keep `secrets/` local. Create the isolated external volumes and the `0600`
+   HMAC key required by the log collector:
+
+   ```bash
+   scripts/prepare-runtime.sh
+   ```
+
+3. Before requesting a new resource audience or changing CMDBuild OAuth
+   configuration, capture the existing configuration with a host-readable
+   CMDBuild administrator-password file. The snapshot prints hashes and flags
+   only; it never prints a password, secret, cookie, or token.
+
+4. Create the dedicated ZITADEL project resource, write its exact ID into the
+   local `.env`, and update the project-scoped role action. The resource ID is
+   an access-token audience; it must not be any OIDC client ID.
+
+   ```bash
+   CMDBUILD_BOOTSTRAP_PASSWORD_FILE=/secure/path/cmdbuild-admin-password \
+     scripts/capture-cmdbuild-oauth-rollback.sh
+   node scripts/create-zitadel-cmdbuild-oidc-tf-resource-project.mjs
+   scripts/configure-resource-audience.sh
+   node scripts/update-zitadel-cmdbuild-oidc-tf-flat-groups-action.mjs
+   ```
+
+5. Before starting the OAuth-configured CMDBuild service, start `oidc-edge`
+   and provision/reconcile the dedicated CMDBuild and native-MCP clients. This
+   creates local `0600` files `secrets/cmdbuild_oidc_tf_client_id` and
+   `secrets/cmdbuild_oidc_tf_client_secret`; neither is tracked or printed.
+   If the confidential CMDBuild client was created before identity state was
+   recorded, run its reconcile once with `CMDBUILD_ROTATE_CLIENT_SECRET=true`.
 
    ```bash
    docker compose --env-file .env -f compose.yml up -d oidc-edge
-   node scripts/provision-zitadel-cmdbuild-oidc-tf-cmdbuild-client.mjs
+   CMDBUILD_ROTATE_CLIENT_SECRET=true \
+     node scripts/provision-zitadel-cmdbuild-oidc-tf-cmdbuild-client.mjs
+   node scripts/provision-zitadel-cmdbuild-oidc-tf-native-mcp-client.mjs
+   node scripts/configure-zitadel-cmdbuild-oidc-tf-native-mcp-token-settings.mjs
+   node scripts/configure-openwebui-native-mcp.mjs
    ```
 
-4. Validate and start:
+6. Validate and start. Reconfigure the CMDBuild OAuth and Bearer modules after
+   the fork is healthy:
 
    ```bash
    docker compose --env-file .env -f compose.yml config --quiet
    docker compose --env-file .env -f compose.yml up -d --build
+   scripts/configure-cmdbuild-zitadel-oauth.sh
+   scripts/configure-cmdbuild-bearer-auth.sh
    ```
 
    If `boot/status` reports `WAITING_FOR_PATCH_MANAGER`, run the isolated maintenance job before the next application start:
@@ -65,8 +100,13 @@ The first CMDBuild initialization can take several minutes. Its data volumes are
 
 - Gateway validates JWT signature, issuer, audience, expiry, then parses the standard ZITADEL project-role claim. If the verified access token has no roles, it reads the same subject's UserInfo response. Unknown or no group is denied.
 - `reader` can call only read tools. `editor` and `admin` can use the bounded demo update. The tool permits one configured demo card and allowlisted attributes only.
-- Gateway and BFF do not have a CMDBuild service-account fallback. The current stock CMDBuild 4.2 result for a forwarded ZITADEL user token is HTTP `400 generic error`; this is a recorded negative result, not a bypass.
-- The configured CMDBuild OAuth-module endpoint adapter is not a CMDBuild reverse proxy. In the current run it reaches the UI shell but does not establish a proved mapped CMDBuild session; therefore the POC does not authorise removing the `cmdbcustompages` session-proxy pattern.
+- Gateway and BFF do not have a CMDBuild service-account fallback. The stock
+  CMDBuild 4.2 image remains Bearer-unsupported; only the checksum-verified
+  local fork can validate a forwarded user access token.
+- The isolated prior POC proved browser mapping by immutable `sub` and
+  `direct-user-api-pass`. This P1/P2 resource-audience hardening must be
+  revalidated with the commands in the runbook before relying on that result.
+  It does not authorize production proxy removal.
 - JWTs, passwords, cookies, auth headers, OAuth codes, and secrets are redacted from stdout and from the log collector.
 - `DIAGNOSTIC_LEVEL=basic` is normal. `verbose` is temporary and still redacted.
 - OpenWebUI has a stable `WEBUI_SECRET_KEY` Docker secret. Its first rollout clears only stale encrypted `oauth_session` cache rows; users must sign in again. This key must never be rotated casually because it encrypts OAuth sessions and MCP OAuth client data.

@@ -14,6 +14,21 @@ export interface Principal {
 
 export class TokenValidationError extends Error {}
 
+const jwksByUri = new Map<string, ReturnType<typeof createRemoteJWKSet>>();
+
+export function remoteJwks(uri: string): ReturnType<typeof createRemoteJWKSet> {
+  let jwks = jwksByUri.get(uri);
+  if (!jwks) {
+    jwks = createRemoteJWKSet(new URL(uri));
+    jwksByUri.set(uri, jwks);
+  }
+  return jwks;
+}
+
+export function clearJwksCacheForTest(): void {
+  jwksByUri.clear();
+}
+
 export function groupsFromClaim(value: unknown): string[] {
   if (Array.isArray(value) && value.every(item => typeof item === 'string')) {
     return [...new Set(value.map(item => item.trim()).filter(Boolean))];
@@ -37,7 +52,7 @@ export function groupsFromClaim(value: unknown): string[] {
   return [];
 }
 
-export function roleFor(groups: readonly string[], config: GatewayConfig): Role | undefined {
+export function roleFor(groups: readonly string[], config: Pick<GatewayConfig, 'groups'>): Role | undefined {
   if (groups.includes(config.groups.admin)) return 'admin';
   if (groups.includes(config.groups.editor)) return 'editor';
   if (groups.includes(config.groups.reader)) return 'reader';
@@ -77,13 +92,15 @@ async function groupsFromUserInfo(token: string, subject: string, config: Gatewa
 }
 
 export async function validateUserToken(token: string, config: GatewayConfig): Promise<Principal> {
-  if (isPlaceholder(config.oidcAudience)) throw new TokenValidationError('oidc_audience_not_configured');
-  const jwks = createRemoteJWKSet(new URL(config.oidcJwksUri));
+  if (isPlaceholder(config.resourceAudience)) {
+    throw new TokenValidationError('oidc_audience_not_configured');
+  }
+  const jwks = remoteJwks(config.oidcJwksUri);
   let payload: JWTPayload;
   try {
     ({ payload } = await jwtVerify(token, jwks, {
       issuer: config.oidcIssuer,
-      audience: config.oidcAudience
+      audience: config.resourceAudience
     }));
   } catch {
     throw new TokenValidationError('invalid_or_expired_token');

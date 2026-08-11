@@ -2,12 +2,14 @@ name: cmdbuild-oidc-tf
 
 services:
   oidc-edge:
-    image: nginx:1.27-alpine
+    image: nginx:1.27-alpine@sha256:65645c7bb6a0661892a8b03b89d0743208a18dd2f3f17a54ef4b76fb8e2f2a10
     container_name: cmdbuild-oidc-tf-edge
     network_mode: host
     restart: unless-stopped
     volumes:
-      - ./compose/nginx-edge.conf:/etc/nginx/conf.d/default.conf:ro
+      - ./compose/nginx-edge.conf.template:/etc/nginx/templates/default.conf.template:ro
+    environment:
+      NGINX_ENVSUBST_FILTER: OPENWEBUI_PUBLIC_PORT|ZITADEL_PUBLIC_PORT|MCP_PUBLIC_PORT
     healthcheck:
       test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:${MCP_PUBLIC_PORT:-8085}/health >/dev/null"]
       interval: 15s
@@ -16,7 +18,7 @@ services:
       start_period: 10s
 
   cmdbuild-db:
-    image: postgis/postgis:${POSTGIS_VERSION:-17-3.5-alpine}
+    image: postgis/postgis:17-3.5-alpine@sha256:4bb8f0bd9156c9c4dbe80056f9d8a1b9bd0cbf39465013bf5e60157ecee3c1f7
     container_name: cmdbuild-oidc-tf-cmdbuild-db
     restart: unless-stopped
     entrypoint: ["/usr/local/bin/cmdbuild-oidc-tf-postgres-entrypoint"]
@@ -62,14 +64,16 @@ services:
       CMDBUILD_BEARER_ENABLED: ${CMDBUILD_BEARER_ENABLED:-false}
       CMDBUILD_BEARER_ISSUER: ${CMDBUILD_BEARER_ISSUER:-http://${PUBLIC_HOST:-192.168.202.35}:${ZITADEL_PUBLIC_PORT:-8084}}
       CMDBUILD_BEARER_JWKS_URL: ${CMDBUILD_BEARER_JWKS_URL:-http://${PUBLIC_HOST:-192.168.202.35}:${ZITADEL_PUBLIC_PORT:-8084}/oauth/v2/keys}
-      CMDBUILD_BEARER_AUDIENCE: ${CMDBUILD_BEARER_AUDIENCE:-${BFF_OIDC_AUDIENCE:-replace-with-zitadel-bff-client-id}}
-      CMDBUILD_BEARER_USER_CLAIM: ${CMDBUILD_BEARER_USER_CLAIM:-cmdbuild_username}
+      CMDBUILD_BEARER_AUDIENCE: ${CMDBUILD_RESOURCE_AUDIENCE:-replace-with-cmdbuild-resource-project-id}
+      CMDBUILD_RESOURCE_AUDIENCE: ${CMDBUILD_RESOURCE_AUDIENCE:-replace-with-cmdbuild-resource-project-id}
+      CMDBUILD_BEARER_USER_CLAIM: ${CMDBUILD_BEARER_USER_CLAIM:-sub}
       CMDBUILD_BEARER_CLOCK_SKEW_SECONDS: ${CMDBUILD_BEARER_CLOCK_SKEW_SECONDS:-30}
       CMDBUILD_BEARER_ALLOWED_JWS_ALGORITHM: ${CMDBUILD_BEARER_ALLOWED_JWS_ALGORITHM:-RS256}
       CMDBUILD_BEARER_AUDIT_SINK_URL: ${CMDBUILD_BEARER_AUDIT_SINK_URL:-http://log-collector:18101/v1/logs}
+      CMDBUILD_BEARER_AUDIT_HMAC_KEY_FILE: /run/secrets/log_collector_hmac_key
       CMDBUILD_BEARER_DIAGNOSTIC_LEVEL: ${CMDBUILD_BEARER_DIAGNOSTIC_LEVEL:-off}
     ports:
-      - "127.0.0.1:${CMDBUILD_HTTP_PORT:-18090}:8080"
+      - "${CMDBUILD_BIND_HOST:-127.0.0.1}:${CMDBUILD_HTTP_PORT:-18090}:8080"
     volumes:
       - ./compose/cmdbuild-entrypoint.sh:/usr/local/bin/cmdbuild-oidc-tf-cmdbuild-entrypoint:ro
     secrets:
@@ -77,6 +81,7 @@ services:
       - cmdbuild_app_password
       - cmdbuild_oidc_tf_client_id
       - cmdbuild_oidc_tf_client_secret
+      - log_collector_hmac_key
     entrypoint: ["/usr/local/bin/cmdbuild-oidc-tf-cmdbuild-entrypoint"]
     networks: [cmdbuild]
     healthcheck:
@@ -108,21 +113,43 @@ services:
       - cmdbuild_app_password
     entrypoint: ["/usr/local/bin/cmdbuild-oidc-tf-cmdbuild-db-patch"]
 
+  log-collector-permissions:
+    image: cmdbuild-oidc-tf:local
+    container_name: cmdbuild-oidc-tf-log-collector-permissions
+    user: "0:0"
+    restart: "no"
+    command:
+      - sh
+      - -ec
+      - >-
+        mkdir -p /var/lib/cmdbuild-oidc-tf-logs &&
+        chown -R node:node /var/lib/cmdbuild-oidc-tf-logs &&
+        chmod 700 /var/lib/cmdbuild-oidc-tf-logs &&
+        find /var/lib/cmdbuild-oidc-tf-logs -type f -exec chmod 600 {} +
+    volumes:
+      - logs:/var/lib/cmdbuild-oidc-tf-logs
+    networks: [cmdbuild]
+
   log-collector:
     build: .
     image: cmdbuild-oidc-tf:local
     container_name: cmdbuild-oidc-tf-log-collector
-    user: "0:0"
     restart: unless-stopped
+    depends_on:
+      log-collector-permissions:
+        condition: service_completed_successfully
     command: ["node", "dist/src/log-collector.js"]
     environment:
       LOG_COLLECTOR_PORT: ${LOG_COLLECTOR_PORT:-18101}
       LOG_DIRECTORY: /var/lib/cmdbuild-oidc-tf-logs
+      LOG_COLLECTOR_HMAC_KEY_FILE: /run/secrets/log_collector_hmac_key
       DIAGNOSTIC_LEVEL: ${DIAGNOSTIC_LEVEL:-basic}
     ports:
       - "127.0.0.1:${LOG_COLLECTOR_PORT:-18101}:18101"
     volumes:
       - logs:/var/lib/cmdbuild-oidc-tf-logs
+    secrets:
+      - log_collector_hmac_key
     networks: [cmdbuild]
     healthcheck:
       test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:${LOG_COLLECTOR_PORT:-18101}/health >/dev/null"]
@@ -149,20 +176,27 @@ services:
       OIDC_ISSUER: ${OIDC_ISSUER:-http://192.168.202.35:8084}
       OIDC_JWKS_URI: ${OIDC_JWKS_URI:-http://${PUBLIC_HOST:-192.168.202.35}:${ZITADEL_PUBLIC_PORT:-8084}/oauth/v2/keys}
       OIDC_USERINFO_URL: ${OIDC_USERINFO_URL:-http://${PUBLIC_HOST:-192.168.202.35}:${ZITADEL_PUBLIC_PORT:-8084}/oidc/v1/userinfo}
-      OIDC_AUDIENCE: ${OIDC_AUDIENCE:-replace-with-zitadel-mcp-client-id}
+      CMDBUILD_RESOURCE_PROJECT_ID: ${CMDBUILD_RESOURCE_PROJECT_ID:-replace-with-cmdbuild-resource-project-id}
+      CMDBUILD_RESOURCE_AUDIENCE: ${CMDBUILD_RESOURCE_AUDIENCE:-replace-with-cmdbuild-resource-project-id}
       GROUP_CLAIM_NAME: ${GROUP_CLAIM_NAME:-cmdbuild_oidc_tf_groups}
       GROUP_ADMIN: ${GROUP_ADMIN:-admin}
       GROUP_EDITOR: ${GROUP_EDITOR:-editor}
       GROUP_READER: ${GROUP_READER:-reader}
-      CMDBUILD_BASE_URL: ${CMDBUILD_BASE_URL:-http://127.0.0.1:18090}
+      CMDBUILD_BASE_URL: ${CMDBUILD_BASE_URL:-http://${PUBLIC_HOST:-192.168.202.35}:${CMDBUILD_HTTP_PORT:-18090}}
       CMDBUILD_DEMO_CLASS: ${CMDBUILD_DEMO_CLASS:-Building}
       CMDBUILD_DEMO_CARD_ID: ${CMDBUILD_DEMO_CARD_ID:-}
       CMDBUILD_WRITABLE_ATTRIBUTES: ${CMDBUILD_WRITABLE_ATTRIBUTES:-Description,Notes}
       LOG_SINK_URL: http://127.0.0.1:${LOG_COLLECTOR_PORT:-18101}/v1/logs
+      LOG_SINK_HMAC_KEY_FILE: /run/secrets/log_collector_hmac_key
       DIAGNOSTIC_LEVEL: ${DIAGNOSTIC_LEVEL:-basic}
+      DEPLOYMENT_PROFILE: ${DEPLOYMENT_PROFILE:-poc-http}
       ALLOWED_HOSTS: ${PUBLIC_HOST:-192.168.202.35},127.0.0.1,localhost
+      MCP_MAX_SESSIONS: ${MCP_MAX_SESSIONS:-500}
+      MCP_MAX_SESSIONS_PER_SUBJECT: ${MCP_MAX_SESSIONS_PER_SUBJECT:-10}
+    secrets:
+      - log_collector_hmac_key
     healthcheck:
-      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:${MCP_GATEWAY_PORT:-18100}/health >/dev/null"]
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:${MCP_GATEWAY_PORT:-18100}/ready >/dev/null"]
       interval: 15s
       timeout: 5s
       retries: 5
@@ -183,20 +217,32 @@ services:
     environment:
       BFF_PORT: ${BFF_PORT:-18086}
       BFF_CLIENT_ID: ${BFF_CLIENT_ID:-replace-with-zitadel-bff-client-id}
-      BFF_CLIENT_SECRET_FILE: /run/secrets/bff_client_secret
       BFF_REDIRECT_URI: ${BFF_REDIRECT_URI:-http://192.168.202.35:18086/oauth/callback}
       OIDC_ISSUER: ${OIDC_ISSUER:-http://192.168.202.35:8084}
       OIDC_JWKS_URI: ${OIDC_JWKS_URI:-http://${PUBLIC_HOST:-192.168.202.35}:${ZITADEL_PUBLIC_PORT:-8084}/oauth/v2/keys}
-      OIDC_AUDIENCE: ${BFF_OIDC_AUDIENCE:-replace-with-zitadel-bff-client-id}
-      CMDBUILD_BASE_URL: ${CMDBUILD_BASE_URL:-http://127.0.0.1:18090}
-      MCP_GATEWAY_URL: ${MCP_GATEWAY_URL:-http://127.0.0.1:${MCP_GATEWAY_PORT:-18100}/mcp}
+      CMDBUILD_RESOURCE_PROJECT_ID: ${CMDBUILD_RESOURCE_PROJECT_ID:-replace-with-cmdbuild-resource-project-id}
+      CMDBUILD_RESOURCE_AUDIENCE: ${CMDBUILD_RESOURCE_AUDIENCE:-replace-with-cmdbuild-resource-project-id}
+      CMDBUILD_BASE_URL: ${CMDBUILD_BASE_URL:-http://${PUBLIC_HOST:-192.168.202.35}:${CMDBUILD_HTTP_PORT:-18090}}
+      GROUP_CLAIM_NAME: ${GROUP_CLAIM_NAME:-cmdbuild_oidc_tf_groups}
+      GROUP_ADMIN: ${GROUP_ADMIN:-admin}
+      GROUP_EDITOR: ${GROUP_EDITOR:-editor}
+      GROUP_READER: ${GROUP_READER:-reader}
+      CMDBUILD_DEMO_CLASS: ${CMDBUILD_DEMO_CLASS:-Building}
+      CMDBUILD_DEMO_CARD_ID: ${CMDBUILD_DEMO_CARD_ID:-}
+      CMDBUILD_WRITABLE_ATTRIBUTES: ${CMDBUILD_WRITABLE_ATTRIBUTES:-Description,Notes}
+      BFF_POC_WRITE_ENABLED: ${BFF_POC_WRITE_ENABLED:-false}
       LOG_SINK_URL: http://127.0.0.1:${LOG_COLLECTOR_PORT:-18101}/v1/logs
+      LOG_SINK_HMAC_KEY_FILE: /run/secrets/log_collector_hmac_key
       DIAGNOSTIC_LEVEL: ${DIAGNOSTIC_LEVEL:-basic}
+      DEPLOYMENT_PROFILE: ${DEPLOYMENT_PROFILE:-poc-http}
       ALLOWED_HOSTS: ${PUBLIC_HOST:-192.168.202.35},127.0.0.1,localhost
+      BFF_MAX_PENDING_LOGINS: ${BFF_MAX_PENDING_LOGINS:-1000}
+      BFF_MAX_BROWSER_SESSIONS: ${BFF_MAX_BROWSER_SESSIONS:-2000}
+      BFF_LOGIN_RATE_LIMIT_PER_MINUTE: ${BFF_LOGIN_RATE_LIMIT_PER_MINUTE:-30}
     secrets:
-      - bff_client_secret
+      - log_collector_hmac_key
     healthcheck:
-      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:${BFF_PORT:-18086}/health >/dev/null"]
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:${BFF_PORT:-18086}/ready >/dev/null"]
       interval: 15s
       timeout: 5s
       retries: 5
@@ -219,9 +265,9 @@ secrets:
     file: ${CMDBUILD_DB_PASSWORD_FILE:-./secrets/cmdbuild_db_password}
   cmdbuild_app_password:
     file: ${CMDBUILD_APP_PASSWORD_FILE:-./secrets/cmdbuild_app_password}
-  bff_client_secret:
-    file: ${BFF_CLIENT_SECRET_FILE:-./secrets/bff_client_secret}
   cmdbuild_oidc_tf_client_id:
     file: ${CMDBUILD_OIDC_CLIENT_ID_FILE:-./secrets/cmdbuild_oidc_tf_client_id}
   cmdbuild_oidc_tf_client_secret:
     file: ${CMDBUILD_OIDC_CLIENT_SECRET_FILE:-./secrets/cmdbuild_oidc_tf_client_secret}
+  log_collector_hmac_key:
+    file: ${LOG_COLLECTOR_HMAC_KEY_FILE:-./secrets/log_collector_hmac_key}

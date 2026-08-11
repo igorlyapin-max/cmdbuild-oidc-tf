@@ -1,5 +1,5 @@
 server {
-    listen 8083;
+    listen ${OPENWEBUI_PUBLIC_PORT};
     server_name _;
     client_max_body_size 32m;
 
@@ -14,7 +14,7 @@ server {
 }
 
 server {
-    listen 8084;
+    listen ${ZITADEL_PUBLIC_PORT};
     server_name _;
     client_max_body_size 16m;
 
@@ -69,7 +69,7 @@ server {
 }
 
 server {
-    listen 8085;
+    listen ${MCP_PUBLIC_PORT};
     server_name _;
 
     location / {

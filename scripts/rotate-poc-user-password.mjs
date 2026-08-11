@@ -2,8 +2,9 @@ import { chmodSync, writeFileSync } from 'node:fs';
 import { randomBytes } from 'node:crypto';
 
 const role = process.argv[2];
-if (!['editor', 'reader'].includes(role)) {
-  throw new Error('usage: rotate-poc-user-password.mjs <editor|reader>');
+const supportedRoles = ['editor', 'reader', 'unassigned', 'unmapped'];
+if (!supportedRoles.includes(role)) {
+  throw new Error(`usage: rotate-poc-user-password.mjs <${supportedRoles.join('|')}>`);
 }
 
 // The fixed suffix guarantees the ZITADEL Basic password policy while the

@@ -1,11 +1,16 @@
 import { readFileSync } from 'node:fs';
 import { chromium } from 'playwright-core';
-import { projectName } from './zitadel-cmdbuild-oidc-tf-state.mjs';
+import { projectName, readState } from './zitadel-cmdbuild-oidc-tf-state.mjs';
 
-const [userId, role] = process.argv.slice(2);
-if (!userId || !['admin', 'editor', 'reader'].includes(role)) {
-  throw new Error('usage: grant-zitadel-cmdbuild-oidc-tf-role.mjs <user-id> <admin|editor|reader>');
+const [userIdOrStateRole, role] = process.argv.slice(2);
+const grantableRoles = ['admin', 'editor', 'reader', 'unassigned'];
+if (!userIdOrStateRole || !grantableRoles.includes(role)) {
+  throw new Error(`usage: grant-zitadel-cmdbuild-oidc-tf-role.mjs <user-id|state-role> <${grantableRoles.join('|')}>`);
 }
+const stateRoles = new Set(['admin', 'editor', 'reader', 'unassigned', 'unmapped']);
+const userId = stateRoles.has(userIdOrStateRole)
+  ? readState(`${userIdOrStateRole}_user_id`)
+  : userIdOrStateRole;
 
 const adminUsername = 'openwebui-admin@openwebui.192.168.202.35';
 const adminPassword = readFileSync('/home/lsk/projects/ubuntu/openwebui-zitadel/secrets/zitadel_admin_password', 'utf8').trim();
@@ -32,10 +37,9 @@ try {
   await page.waitForTimeout(700);
   const text = await page.locator('body').innerText();
   console.log(JSON.stringify({
-    userId,
+    user_id_hash: userId.slice(-8),
     role,
-    granted: text.includes(role),
-    url: page.url(),
+    granted: text.includes(role)
   }));
 } finally {
   await browser.close();

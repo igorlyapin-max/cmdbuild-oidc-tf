@@ -9,7 +9,7 @@ Performed on 2026-08-10. This record is the sole local reference to the former P
 - Persistent active volumes: `cmdbuild-oidc-tf_cmdbuild_db` and `cmdbuild-oidc-tf_logs`.
 - Database: `cmdbuild_oidc_tf`.
 - ZITADEL users: `cmdbuild-oidc-tf-admin`, `cmdbuild-oidc-tf-editor`, `cmdbuild-oidc-tf-reader`.
-- Flat group claim: `cmdbuild_oidc_tf_groups`; immutable user mapping claim remains `cmdbuild_username`.
+- Flat group claim: `cmdbuild_oidc_tf_groups`; immutable local-user mapping uses the standard OIDC `sub` claim.
 
 ## Preserved rollback snapshot
 

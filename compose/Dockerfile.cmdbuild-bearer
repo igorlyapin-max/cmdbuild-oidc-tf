@@ -1,13 +1,15 @@
-FROM itmicus/cmdbuild:4.2.0 AS vendor-libs
+FROM itmicus/cmdbuild:4.2.0@sha256:9cf0d3f4e6682ecc75b9b0469e417c0be54cbd9cbae89e8371fe85c9265a5db4 AS vendor-libs
 
-FROM maven:3.9.9-eclipse-temurin-17 AS build
+FROM maven:3.9.9-eclipse-temurin-17@sha256:f58d59b6273e785ac0a4477f6e9b5ba1d7731c75b906c0f7b34076f1851318cc AS build
 ARG CMDBUILD_SOURCE_URL=https://sourceforge.net/projects/cmdbuild/files/4.2.0/cmdbuild-4.2.0-src.zip/download
 ARG CMDBUILD_SOURCE_SHA256=7d9e08fc9674bc241b8b35d09183ba04e7d5d9024dba182acfde6cfdb5704f61
+ARG CMDBUILD_BEARER_PATCH_SHA256=5a14c7c5bfa651499ea0eef3fa652579a4700ae262e0f45afc9f69acb222b339
 WORKDIR /src
 RUN apt-get update && apt-get install -y --no-install-recommends curl patch unzip && rm -rf /var/lib/apt/lists/*
 COPY patches/cmdbuild-4.2.0-bearer.patch /tmp/cmdbuild-4.2.0-bearer.patch
 RUN curl --fail --location --retry 3 "$CMDBUILD_SOURCE_URL" -o /tmp/cmdbuild-4.2.0-src.zip \
     && echo "$CMDBUILD_SOURCE_SHA256  /tmp/cmdbuild-4.2.0-src.zip" | sha256sum -c - \
+    && echo "$CMDBUILD_BEARER_PATCH_SHA256  /tmp/cmdbuild-4.2.0-bearer.patch" | sha256sum -c - \
     && unzip -q /tmp/cmdbuild-4.2.0-src.zip -d /src \
     && patch -p1 -d /src < /tmp/cmdbuild-4.2.0-bearer.patch \
     && rm -f /tmp/cmdbuild-4.2.0-src.zip /tmp/cmdbuild-4.2.0-bearer.patch
@@ -21,11 +23,15 @@ RUN --mount=type=cache,target=/root/.m2 mvn org.apache.maven.plugins:maven-insta
     && mvn org.apache.maven.plugins:maven-install-plugin:3.1.2:install-file -Dfile=/opt/vendor-libs/java-saml-core-3.9.0.jar -DgroupId=com.onelogin -DartifactId=java-saml-core -Dversion=3.9.0 -Dpackaging=jar -DgeneratePom=true
 RUN --mount=type=cache,target=/root/.m2 mvn -pl cmdbuild -am -Dmaven.test.skip=true package
 
-FROM itmicus/cmdbuild:4.2.0
+FROM itmicus/cmdbuild:4.2.0@sha256:9cf0d3f4e6682ecc75b9b0469e417c0be54cbd9cbae89e8371fe85c9265a5db4
 USER root
+ARG CMDBUILD_SOURCE_SHA256=7d9e08fc9674bc241b8b35d09183ba04e7d5d9024dba182acfde6cfdb5704f61
+ARG CMDBUILD_BEARER_PATCH_SHA256=5a14c7c5bfa651499ea0eef3fa652579a4700ae262e0f45afc9f69acb222b339
 LABEL org.opencontainers.image.title="cmdbuild-oidc-tf-cmdbuild-bearer" \
       org.opencontainers.image.version="4.2.0-bearer.1" \
-      org.opencontainers.image.source-sha256="7d9e08fc9674bc241b8b35d09183ba04e7d5d9024dba182acfde6cfdb5704f61"
+      org.opencontainers.image.source-sha256="$CMDBUILD_SOURCE_SHA256" \
+      org.opencontainers.image.patch-sha256="$CMDBUILD_BEARER_PATCH_SHA256" \
+      org.opencontainers.image.vendor-base-digest="sha256:9cf0d3f4e6682ecc75b9b0469e417c0be54cbd9cbae89e8371fe85c9265a5db4"
 RUN rm -rf /usr/local/tomcat/webapps/cmdbuild
 COPY --from=build /src/cmdbuild/target/cmdbuild.war /tmp/cmdbuild.war
 RUN mkdir -p /usr/local/tomcat/webapps/cmdbuild \

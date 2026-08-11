@@ -1,5 +1,11 @@
-import type { GatewayConfig } from './config.js';
 import { fingerprint } from './logger.js';
+
+export interface CmdbuildApiConfig {
+  cmdbuildBaseUrl: string;
+  demoClass: string;
+  demoCardId?: string;
+  writableAttributes: Set<string>;
+}
 
 export class CmdbuildApiError extends Error {
   constructor(readonly status: number, readonly code: string) {
@@ -12,7 +18,7 @@ function endpoint(baseUrl: string, path: string): URL {
 }
 
 async function cmdbuildRequest(
-  config: GatewayConfig,
+  config: CmdbuildApiConfig,
   userToken: string,
   method: 'GET' | 'PUT',
   path: string,
@@ -38,16 +44,26 @@ async function cmdbuildRequest(
   return contentType.includes('application/json') ? response.json() : response.text();
 }
 
-export async function currentUser(config: GatewayConfig, userToken: string): Promise<unknown> {
+export async function currentUser(config: CmdbuildApiConfig, userToken: string): Promise<unknown> {
   return cmdbuildRequest(config, userToken, 'GET', 'sessions/current');
 }
 
-export async function readDemoCards(config: GatewayConfig, userToken: string, limit: number): Promise<unknown> {
+export async function readDemoCards(config: CmdbuildApiConfig, userToken: string, limit: number): Promise<unknown> {
   return cmdbuildRequest(config, userToken, 'GET', `classes/${encodeURIComponent(config.demoClass)}/cards?limit=${limit}`);
 }
 
+export async function readDemoCard(config: CmdbuildApiConfig, userToken: string): Promise<unknown> {
+  if (!config.demoCardId) throw new CmdbuildApiError(409, 'cmdbuild_demo_card_not_configured');
+  return cmdbuildRequest(
+    config,
+    userToken,
+    'GET',
+    `classes/${encodeURIComponent(config.demoClass)}/cards/${encodeURIComponent(config.demoCardId)}`
+  );
+}
+
 export async function updateDemoCard(
-  config: GatewayConfig,
+  config: CmdbuildApiConfig,
   userToken: string,
   attribute: string,
   value: string

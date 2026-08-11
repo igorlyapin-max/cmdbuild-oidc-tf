@@ -1,7 +1,7 @@
 diff -ruN a/auth/commons/src/main/java/org/cmdbuild/auth/config/BearerTokenAuthenticationConfiguration.java b/auth/commons/src/main/java/org/cmdbuild/auth/config/BearerTokenAuthenticationConfiguration.java
 --- a/auth/commons/src/main/java/org/cmdbuild/auth/config/BearerTokenAuthenticationConfiguration.java	1970-01-01 03:00:00.000000000 +0300
 +++ b/auth/commons/src/main/java/org/cmdbuild/auth/config/BearerTokenAuthenticationConfiguration.java	2026-08-10 10:20:37.440984464 +0300
-@@ -0,0 +1,32 @@
+@@ -0,0 +1,34 @@
 +/*
 + * CMDBuild has been developed and is managed by PAT srl
 + * You can use, distribute, edit CMDBuild according to the license
@@ -31,6 +31,8 @@ diff -ruN a/auth/commons/src/main/java/org/cmdbuild/auth/config/BearerTokenAuthe
 +    String getAllowedJwsAlgorithm();
 +
 +    String getAuditSinkUrl();
++
++    String getAuditSinkHmacKeyFile();
 +
 +    String getDiagnosticLevel();
 +}
@@ -102,7 +104,8 @@ diff -ruN a/cmdbuild/src/main/java/org/cmdbuild/webapp/filters/RequestTrackingFi
 +        Map<String, String> requestHeaders = Collections.list(request.getHeaderNames()).stream().distinct().sorted().collect(toMap(identity(), h -> isSensitiveHeader(h) ? "[REDACTED]" : Joiner.on(", ").join(Collections.list(request.getHeaders(h)))));
  
          if (logger.isTraceEnabled()) {
-             logger.trace("request is from =< {} > method =< {} > path =< {} > query =< {} >", request.getRemoteAddr(), request.getMethod(), requestPath, nullToEmpty(request.getQueryString()));
+-            logger.trace("request is from =< {} > method =< {} > path =< {} > query =< {} >", request.getRemoteAddr(), request.getMethod(), requestPath, nullToEmpty(request.getQueryString()));
++            logger.trace("request is from =< {} > method =< {} > path =< {} > query =< {} >", request.getRemoteAddr(), request.getMethod(), requestPath, request.getQueryString() == null ? "" : "[REDACTED]");
              logger.trace("request headers =\n\n{}\n", mapToLoggableString(requestHeaders));
 -            logger.trace("request cookies =\n\n{}\n", mapToLoggableString(map(list(firstNonNull(request.getCookies(), new Cookie[]{})).sorted(Cookie::getName), Cookie::getName, Cookie::getValue)));
 +            logger.trace("request cookies =\n\n{}\n", mapToLoggableString(map(list(firstNonNull(request.getCookies(), new Cookie[]{})).sorted(Cookie::getName), Cookie::getName, cookie -> "[REDACTED]")));
@@ -135,7 +138,7 @@ diff -ruN a/cmdbuild/src/main/java/org/cmdbuild/webapp/filters/RequestTrackingFi
 diff -ruN a/cmdbuild/src/main/java/org/cmdbuild/webapp/security/BearerAuthenticationAuditSink.java b/cmdbuild/src/main/java/org/cmdbuild/webapp/security/BearerAuthenticationAuditSink.java
 --- a/cmdbuild/src/main/java/org/cmdbuild/webapp/security/BearerAuthenticationAuditSink.java	1970-01-01 03:00:00.000000000 +0300
 +++ b/cmdbuild/src/main/java/org/cmdbuild/webapp/security/BearerAuthenticationAuditSink.java	2026-08-10 10:53:03.891820776 +0300
-@@ -0,0 +1,53 @@
+@@ -0,0 +1,93 @@
 +/*
 + * CMDBuild has been developed and is managed by PAT srl
 + * You can use, distribute, edit CMDBuild according to the license
@@ -147,15 +150,24 @@ diff -ruN a/cmdbuild/src/main/java/org/cmdbuild/webapp/security/BearerAuthentica
 +import java.net.http.HttpRequest;
 +import java.net.http.HttpRequest.BodyPublishers;
 +import java.net.http.HttpResponse.BodyHandlers;
++import java.nio.charset.StandardCharsets;
++import java.nio.file.Files;
++import java.nio.file.Path;
 +import java.time.Duration;
 +import java.time.Instant;
++import javax.crypto.Mac;
++import javax.crypto.spec.SecretKeySpec;
 +import static java.util.Objects.requireNonNullElse;
 +import org.apache.commons.lang3.StringUtils;
 +import org.cmdbuild.auth.config.BearerTokenAuthenticationConfiguration;
++import org.slf4j.Logger;
++import org.slf4j.LoggerFactory;
 +import org.springframework.stereotype.Component;
 +
 +@Component
 +public class BearerAuthenticationAuditSink {
++
++    private static final Logger LOGGER = LoggerFactory.getLogger(BearerAuthenticationAuditSink.class);
 +
 +    private final HttpClient client = HttpClient.newBuilder().connectTimeout(Duration.ofSeconds(1)).build();
 +
@@ -170,12 +182,26 @@ diff -ruN a/cmdbuild/src/main/java/org/cmdbuild/webapp/security/BearerAuthentica
 +                return;
 +            }
 +            String payload = "{\"timestamp\":\"" + Instant.now() + "\",\"level\":\"info\",\"service\":\"cmdbuild\",\"event\":\"bearer.auth." + event + "\",\"reason\":\"" + reason + "\",\"subject_hash\":\"" + requireNonNullElse(subjectHash, "none") + "\"}";
++            String signature = hmacSignature(configuration.getAuditSinkHmacKeyFile(), payload);
++            if (signature == null) {
++                return;
++            }
 +            HttpRequest request = HttpRequest.newBuilder(uri)
 +                    .timeout(Duration.ofSeconds(2))
 +                    .header("Content-Type", "application/json")
++                    .header("X-Log-Signature", signature)
 +                    .POST(BodyPublishers.ofString(payload))
 +                    .build();
-+            client.sendAsync(request, BodyHandlers.discarding());
++            client.sendAsync(request, BodyHandlers.discarding())
++                    .thenAccept(response -> {
++                        if (response.statusCode() >= 300) {
++                            LOGGER.warn("event=bearer.audit_sink.delivery_failed status={}", response.statusCode());
++                        }
++                    })
++                    .exceptionally(ex -> {
++                        LOGGER.warn("event=bearer.audit_sink.delivery_failed error_type={}", ex.getClass().getSimpleName());
++                        return null;
++                    });
 +        } catch (Exception ex) {
 +            // stdout remains the authoritative audit stream; never recurse by logging a sink error.
 +        }
@@ -188,11 +214,28 @@ diff -ruN a/cmdbuild/src/main/java/org/cmdbuild/webapp/security/BearerAuthentica
 +                && uri.getFragment() == null
 +                && uri.getQuery() == null;
 +    }
++
++    private String hmacSignature(String keyPath, String payload) {
++        if (StringUtils.isBlank(keyPath)) {
++            return null;
++        }
++        try {
++            String key = Files.readString(Path.of(keyPath), StandardCharsets.UTF_8).trim();
++            if (StringUtils.isBlank(key)) {
++                return null;
++            }
++            Mac mac = Mac.getInstance("HmacSHA256");
++            mac.init(new SecretKeySpec(key.getBytes(StandardCharsets.UTF_8), "HmacSHA256"));
++            return java.util.HexFormat.of().formatHex(mac.doFinal(payload.getBytes(StandardCharsets.UTF_8)));
++        } catch (Exception ex) {
++            return null;
++        }
++    }
 +}
 diff -ruN a/cmdbuild/src/main/java/org/cmdbuild/webapp/security/BearerTokenAuthenticationFilter.java b/cmdbuild/src/main/java/org/cmdbuild/webapp/security/BearerTokenAuthenticationFilter.java
 --- a/cmdbuild/src/main/java/org/cmdbuild/webapp/security/BearerTokenAuthenticationFilter.java	1970-01-01 03:00:00.000000000 +0300
 +++ b/cmdbuild/src/main/java/org/cmdbuild/webapp/security/BearerTokenAuthenticationFilter.java	2026-08-10 11:25:48.407668090 +0300
-@@ -0,0 +1,204 @@
+@@ -0,0 +1,205 @@
 +/*
 + * CMDBuild has been developed and is managed by PAT srl
 + * You can use, distribute, edit CMDBuild according to the license
@@ -217,6 +260,7 @@ diff -ruN a/cmdbuild/src/main/java/org/cmdbuild/webapp/security/BearerTokenAuthe
 +import org.cmdbuild.auth.login.AuthenticationService;
 +import org.cmdbuild.auth.login.LoginDataImpl;
 +import org.cmdbuild.auth.session.SessionService;
++import org.cmdbuild.auth.user.LoginUser;
 +import static org.cmdbuild.common.http.HttpConst.CMDBUILD_AUTHORIZATION_COOKIE;
 +import static org.cmdbuild.common.http.HttpConst.CMDBUILD_AUTHORIZATION_HEADER;
 +import org.slf4j.Logger;
@@ -267,13 +311,13 @@ diff -ruN a/cmdbuild/src/main/java/org/cmdbuild/webapp/security/BearerTokenAuthe
 +        }
 +        try {
 +            String username = validator.validate(bearerHeader.token(), configuration);
-+            if (authenticationService.getUserByUsernameOrNull(username) == null) {
++            LoginUser cmdbuildUser = authenticationService.getUserByUsernameOrNull(username);
++            if (cmdbuildUser == null || cmdbuildUser.isService()) {
 +                throw new BearerTokenValidationException("unknown_or_inactive_user");
 +            }
 +            String cmdbuildSessionId = sessionService.createAndSet(LoginDataImpl.builder()
 +                    .withNoPasswordRequired()
 +                    .withLoginString(username)
-+                    .allowServiceUser()
 +                    .build());
 +            try {
 +                if (!sessionService.getCurrentSession().getOperationUser().hasDefaultGroup()) {
@@ -618,7 +662,7 @@ diff -ruN a/cmdbuild/src/main/java/org/cmdbuild/webapp/security/SessionTokenFilt
 diff -ruN a/core/configdefs/src/main/java/org/cmdbuild/config/BearerTokenAuthenticationConfigurationImpl.java b/core/configdefs/src/main/java/org/cmdbuild/config/BearerTokenAuthenticationConfigurationImpl.java
 --- a/core/configdefs/src/main/java/org/cmdbuild/config/BearerTokenAuthenticationConfigurationImpl.java	1970-01-01 03:00:00.000000000 +0300
 +++ b/core/configdefs/src/main/java/org/cmdbuild/config/BearerTokenAuthenticationConfigurationImpl.java	2026-08-10 10:20:37.553991558 +0300
-@@ -0,0 +1,89 @@
+@@ -0,0 +1,97 @@
 +/*
 + * CMDBuild has been developed and is managed by PAT srl
 + * You can use, distribute, edit CMDBuild according to the license
@@ -659,6 +703,9 @@ diff -ruN a/core/configdefs/src/main/java/org/cmdbuild/config/BearerTokenAuthent
 +
 +    @ConfigValue(key = "auditSinkUrl", description = "optional server-owned HTTP(S) structured audit sink; leave empty to use stdout only", defaultValue = "", category = ConfigCategory.CC_ENV)
 +    private String auditSinkUrl;
++
++    @ConfigValue(key = "auditSinkHmacKeyFile", description = "server-owned readable file containing the HMAC key for structured bearer audit delivery", defaultValue = "", category = ConfigCategory.CC_ENV)
++    private String auditSinkHmacKeyFile;
 +
 +    @ConfigValue(key = "diagnosticLevel", description = "off (default), basic or verbose; diagnostics never include credentials or JWT values", defaultValue = "off", category = ConfigCategory.CC_ENV)
 +    private String diagnosticLevel;
@@ -701,6 +748,11 @@ diff -ruN a/core/configdefs/src/main/java/org/cmdbuild/config/BearerTokenAuthent
 +    @Override
 +    public String getAuditSinkUrl() {
 +        return auditSinkUrl;
++    }
++
++    @Override
++    public String getAuditSinkHmacKeyFile() {
++        return auditSinkHmacKeyFile;
 +    }
 +
 +    @Override

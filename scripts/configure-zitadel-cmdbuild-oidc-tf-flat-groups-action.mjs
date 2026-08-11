@@ -1,27 +1,24 @@
 import { readFileSync } from 'node:fs';
 import { chromium } from 'playwright-core';
+import { readState } from './zitadel-cmdbuild-oidc-tf-state.mjs';
 
 const consoleUrl = 'http://192.168.202.35:8084/ui/console/actions';
 const adminUsername = 'openwebui-admin@openwebui.192.168.202.35';
 const adminPasswordPath = '/home/lsk/projects/ubuntu/openwebui-zitadel/secrets/zitadel_admin_password';
 const actionName = 'cmdbuild_oidc_tf_flat_groups';
 const groupClaim = 'cmdbuild_oidc_tf_groups';
-const cmdbuildUsernameClaim = 'cmdbuild_username';
 const complementTokenTriggers = ['Pre Userinfo creation', 'Pre access token creation'];
+const projectId = readState('project_id');
 const actionCode = `function ${actionName}(ctx, api) {
-  const user = ctx.v1.getUser();
-  const cmdbuildUsername = user && (user.preferredLoginName || user.username);
-  if (typeof cmdbuildUsername === 'string' && cmdbuildUsername.length > 0) {
-    api.v1.claims.setClaim('${cmdbuildUsernameClaim}', cmdbuildUsername);
-  }
   if (ctx.v1.user.grants === undefined || ctx.v1.user.grants.count === 0) {
     return;
   }
   const groups = [];
   ctx.v1.user.grants.grants.forEach((grant) => {
+    if (grant.projectId !== '${projectId}') return;
     grant.roles.forEach((role) => {
       const mapped = role.match(/^cmdbuild_oidc_tf_(admin|editor|reader)$/)?.[1];
-      groups.push(mapped ?? role);
+      if (mapped) groups.push(mapped);
     });
   });
   api.v1.claims.setClaim('${groupClaim}', [...new Set(groups)]);
@@ -113,7 +110,7 @@ try {
   await selectComplementTokenFlow(page);
   const triggers = {};
   for (const trigger of complementTokenTriggers) triggers[trigger] = await ensureTrigger(page, trigger);
-  console.log(JSON.stringify({ action: actionName, status: actionStatus, group_claim: groupClaim, cmdbuild_username_claim: cmdbuildUsernameClaim, triggers }));
+  console.log(JSON.stringify({ action: actionName, status: actionStatus, group_claim: groupClaim, project_id_hash: projectId.slice(-8), local_cmdbuild_mapping: 'OIDC sub', triggers }));
 } finally {
   await browser.close();
 }

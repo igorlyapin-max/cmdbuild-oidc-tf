@@ -11,14 +11,18 @@ export CMDBUILD_APP_PASSWORD
 # normalize ownership before dropping privileges for Tomcat.
 chown -R tomcat:tomcat /usr/local/tomcat
 
-cat /dev/null > "$CATALINA_HOME/conf/cmdbuild/database.conf"
+database_conf="$CATALINA_HOME/conf/cmdbuild/database.conf"
+database_conf_tmp="$database_conf.tmp"
+install -o tomcat -g tomcat -m 0600 /dev/null "$database_conf_tmp"
 {
   echo "db.url=jdbc:postgresql://${POSTGRES_HOST}:${POSTGRES_PORT}/${POSTGRES_DB}"
   echo "db.username=cmdbuild"
   echo "db.password=${CMDBUILD_APP_PASSWORD}"
   echo "db.admin.username=${POSTGRES_USER}"
   echo "db.admin.password=${POSTGRES_PASSWORD}"
-} >> "$CATALINA_HOME/conf/cmdbuild/database.conf"
+} >> "$database_conf_tmp"
+mv -f "$database_conf_tmp" "$database_conf"
+test "$(stat -c '%a:%U:%G' "$database_conf")" = '600:tomcat:tomcat'
 
 while ! timeout 1 bash -c "echo > /dev/tcp/${POSTGRES_HOST}/${POSTGRES_PORT}"; do
   >&2 echo "Postgres is unavailable - sleeping"
@@ -31,5 +35,5 @@ case "$CMDBUILD_DUMP_PATH" in
   *) CMDBUILD_DUMP_PATH="$CATALINA_HOME/webapps/cmdbuild/WEB-INF/sql/dump/$CMDBUILD_DUMP_PATH" ;;
 esac
 test -r "$CMDBUILD_DUMP_PATH"
-"$CATALINA_HOME/webapps/cmdbuild/cmdbuild.sh" dbconfig create "$CMDBUILD_DUMP_PATH" -configfile "$CATALINA_HOME/conf/cmdbuild/database.conf" || true
+"$CATALINA_HOME/webapps/cmdbuild/cmdbuild.sh" dbconfig create "$CMDBUILD_DUMP_PATH" -configfile "$database_conf" || true
 exec setpriv --reuid=tomcat --regid=tomcat --init-groups --inh-caps=-all "$CATALINA_HOME/bin/catalina.sh" run

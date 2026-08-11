@@ -3,8 +3,12 @@ import { chromium } from 'playwright-core';
 
 const openWebUiUrl = 'http://192.168.202.35:8083';
 const bffUrl = 'http://192.168.202.35:18086';
-const username = 'cmdbuild-oidc-tf-reader';
-const password = readFileSync('secrets/zitadel_cmdbuild_oidc_tf_reader_password', 'utf8').trim();
+const role = process.argv[2] ?? 'reader';
+if (!['reader', 'editor'].includes(role)) {
+  throw new Error('usage: e2e-openwebui-reader-group-sync.mjs [reader|editor]');
+}
+const username = `cmdbuild-oidc-tf-${role}`;
+const password = readFileSync(`secrets/zitadel_cmdbuild_oidc_tf_${role}_password`, 'utf8').trim();
 
 const browser = await chromium.launch({ executablePath: '/usr/bin/google-chrome', headless: true, args: ['--no-sandbox'] });
 try {
@@ -54,10 +58,10 @@ try {
     };
   });
 
-  if (identity.error || identity.user_status !== 200 || identity.groups_status !== 200 || identity.role !== 'user' || !identity.groups.includes('reader')) {
-    throw new Error(`openwebui_reader_group_sync_failed:${JSON.stringify(identity)}`);
+  if (identity.error || identity.user_status !== 200 || identity.groups_status !== 200 || identity.role !== 'user' || !identity.groups.includes(role)) {
+    throw new Error(`openwebui_${role}_group_sync_failed:${JSON.stringify(identity)}`);
   }
-  console.log(JSON.stringify({ login: 'ok', ...identity }));
+  console.log(JSON.stringify({ login: 'ok', expected_group: role, ...identity }));
 } finally {
   await browser.close();
 }

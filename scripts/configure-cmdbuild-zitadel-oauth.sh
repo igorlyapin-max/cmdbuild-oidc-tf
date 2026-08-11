@@ -2,12 +2,14 @@
 set -eu
 
 : "${CMDBUILD_OIDC_COMPAT_URL:=http://192.168.202.35:8084/cmdbuild-oidc}"
-: "${CMDBUILD_OIDC_REDIRECT_URI:=http://127.0.0.1:18090/cmdbuild/oauth2/callback}"
+: "${CMDBUILD_OIDC_REDIRECT_URI:=http://192.168.202.35:18090/cmdbuild/oauth2/callback}"
+: "${CMDBUILD_OIDC_LOGIN_ATTR:=sub}"
 
-docker compose --env-file .env -f compose.yml exec -T cmdbuild sh -s -- "$CMDBUILD_OIDC_COMPAT_URL" "$CMDBUILD_OIDC_REDIRECT_URI" <<'REMOTE'
+docker compose --env-file .env -f compose.yml exec -T cmdbuild sh -s -- "$CMDBUILD_OIDC_COMPAT_URL" "$CMDBUILD_OIDC_REDIRECT_URI" "$CMDBUILD_OIDC_LOGIN_ATTR" <<'REMOTE'
 set -eu
 service_url="$1"
 redirect_uri="$2"
+login_attr="$3"
 cmdbuild='/usr/local/tomcat/webapps/cmdbuild/cmdbuild.sh'
 client_id=$(cat /run/secrets/cmdbuild_oidc_tf_client_id)
 client_secret=$(cat /run/secrets/cmdbuild_oidc_tf_client_secret)
@@ -19,7 +21,7 @@ set_config org.cmdbuild.auth.module.oauth.protocol OP_CUSTOM
 set_config org.cmdbuild.auth.module.oauth.clientId "$client_id"
 set_config org.cmdbuild.auth.module.oauth.clientSecret "$client_secret"
 set_config org.cmdbuild.auth.module.oauth.login.type auto
-set_config org.cmdbuild.auth.module.oauth.login.attr preferred_username
+set_config org.cmdbuild.auth.module.oauth.login.attr "$login_attr"
 set_config org.cmdbuild.auth.module.oauth.redirectUrl "$redirect_uri"
 set_config org.cmdbuild.auth.module.oauth.serviceUrl "$service_url"
 set_config org.cmdbuild.auth.module.oauth.scope 'openid profile email'

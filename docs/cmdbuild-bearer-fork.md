@@ -15,7 +15,7 @@ For every valid request CMDBuild:
    configured asymmetric JWS algorithm;
 2. verifies `iss`, that `aud` contains the configured audience, `exp`, `nbf`,
    `iat`, and a bounded clock skew;
-3. reads one configured string claim (default `preferred_username`), requires
+3. reads one configured string claim (the fork default is `preferred_username`; this POC configures immutable `sub`), requires
    an existing active CMDBuild user with a default group, and creates a
    server-side CMDBuild session only for the request lifecycle; it is deleted
    before the response returns and its token never leaves the server;
@@ -56,31 +56,37 @@ them:
 CMDBUILD_BEARER_ENABLED=true
 CMDBUILD_BEARER_ISSUER=http://192.168.202.35:8084
 CMDBUILD_BEARER_JWKS_URL=http://192.168.202.35:8084/oauth/v2/keys
-# Empty reuses BFF_OIDC_AUDIENCE; otherwise set an exact access-token audience.
-CMDBUILD_BEARER_AUDIENCE=
-CMDBUILD_BEARER_USER_CLAIM=cmdbuild_username
+# A dedicated ZITADEL project resource, never an OIDC client ID.
+CMDBUILD_RESOURCE_PROJECT_ID=<resource-project-id>
+CMDBUILD_RESOURCE_AUDIENCE=<resource-project-id>
+CMDBUILD_BEARER_AUDIENCE=<resource-project-id>
+CMDBUILD_BEARER_USER_CLAIM=sub
 CMDBUILD_BEARER_CLOCK_SKEW_SECONDS=30
 CMDBUILD_BEARER_ALLOWED_JWS_ALGORITHM=RS256
 CMDBUILD_BEARER_AUDIT_SINK_URL=http://log-collector:18101/v1/logs
+CMDBUILD_BEARER_AUDIT_HMAC_KEY_FILE=/run/secrets/log_collector_hmac_key
 CMDBUILD_BEARER_DIAGNOSTIC_LEVEL=off
 ```
 
-`CMDBUILD_BEARER_AUDIENCE` must be an audience present in the forwarded access
-token, not a display name. The ZITADEL Complement Token Action
-`cmdbuild_oidc_tf_flat_groups` emits the one-to-one `cmdbuild_username` claim and must
-be attached to `Pre access token creation`; for that trigger it must read the
-profile through `ctx.v1.getUser()`. It does not create CMDBuild users or
-grants. For FAM, set the issuer, JWKS URL, audience and allowed asymmetric
-algorithm to its documented values. Use HTTPS outside this isolated POC.
+`CMDBUILD_RESOURCE_PROJECT_ID`, `CMDBUILD_RESOURCE_AUDIENCE`, and
+`CMDBUILD_BEARER_AUDIENCE` must be the same dedicated resource-project ID and
+must be present in the forwarded **access token** audience, not an ID token or
+a client ID. This POC maps the standard immutable OIDC `sub`
+directly to an explicitly created local CMDBuild user/default group. The
+ZITADEL Complement Token Action emits only `cmdbuild_oidc_tf_groups`; it does
+not create CMDBuild users or grants and must not introduce a mutable
+username-claim fallback. For FAM, set issuer, JWKS URL, audience and allowed
+asymmetric algorithm to its documented values. Use HTTPS outside this POC.
 
 ```bash
+scripts/prepare-runtime.sh
 docker compose --env-file .env -f compose.yml build cmdbuild
 docker compose --env-file .env -f compose.yml up -d --force-recreate log-collector cmdbuild mcp-gateway cmdb-oidc-bff
 scripts/configure-cmdbuild-bearer-auth.sh
 ```
 
-The configuration script refuses placeholders and never prints credentials or
-JWTs. Bearer authentication is disabled by default. `diagnosticLevel` accepts
+The configuration script refuses placeholders, a mismatched resource audience,
+and an unreadable audit HMAC key; it never prints credentials or JWTs. Bearer authentication is disabled by default. `diagnosticLevel` accepts
 `off`, `basic`, and temporary `verbose`; diagnostic records contain neither
 raw identity values nor credentials.
 
@@ -90,13 +96,13 @@ environment variable exists only for an isolated interactive POC and must not
 be committed or logged:
 
 ```bash
-CMDBUILD_BOOTSTRAP_PASSWORD_FILE=/run/secrets/cmdbuild_bootstrap_password \
-  scripts/provision-cmdbuild-bearer-reader.sh
+CMDBUILD_BOOTSTRAP_PASSWORD_FILE=/secure/path/cmdbuild-admin-password \
+  scripts/provision-cmdbuild-poc-grants.sh
 ```
 
-The script creates (or reuses) the empty-privilege `McpReader` group and the
-active `cmdbuild-oidc-tf-reader` user with that default group. Its generated local
-password is intentionally unrecoverable and is never used by BFF or MCP.
+The script creates (or reuses) card-scoped reader/editor groups and matching
+active local users for the disposable card. Generated local passwords are
+intentionally unrecoverable and are never used by BFF or MCP.
 
 ## Audit and diagnostics
 
@@ -104,9 +110,11 @@ Every accepted or rejected Bearer request emits a parameterized stdout audit
 event containing only a short one-way local username fingerprint (when a
 mapping exists) and a fixed reason category. When `auditSinkUrl` is set, the
 same redacted structured event is delivered asynchronously to
-`log-collector`. The collector is on the CMDBuild Docker network and is only
-published on host loopback. Failure of the audit sink never authenticates a
-request and never recursively logs an outbound failure.
+`log-collector` with an HMAC signature shared through a Docker secret. The
+collector is on the CMDBuild Docker network and is only published on host
+loopback. It rejects unsigned records, rotates local files, and reports
+non-writable storage as not ready. Failure of the audit sink never authenticates
+a request and never recursively logs an outbound failure.
 
 The setup script also selects CMDBuild's built-in `logger.type=stdout` mode.
 This keeps the ordinary CMDBuild structured pipeline on stdout while retaining
@@ -123,19 +131,23 @@ exchange:
 
 | Scenario | Expected result |
 |---|---|
-| BFF `sessions/current` with reader token | `200`, mapped CMDBuild user is `cmdbuild-oidc-tf-reader` |
+| BFF `sessions/current` with reader token | `200`, mapped CMDBuild user is that user's immutable OIDC `sub` |
 | Reader read of the isolated demo class | allowed by CMDBuild RBAC |
 | Reader bounded write | denied, no mutation |
 | Editor bounded write and read-back | allowed only with CMDBuild editor grant |
 | Invalid/malformed Bearer | `401` and no CMDBuild operation |
 | Valid token with unknown mapped user/default group | `401` and no operation |
-| Existing browser OIDC | unchanged regression result documented separately |
+| Existing browser OIDC | reader and editor create a matching CMDBuild browser session |
 
-On 2026-08-10 the first Direct BFF row passed on the isolated fork: the BFF
-received HTTP `200` and mapped `cmdbuild-oidc-tf-reader`. The malformed-Bearer row also
-returned HTTP `401`; stdout and `log-collector` received only redacted audit
-categories. This is not a completed reader/editor grant matrix or browser OIDC
-acceptance result.
+Before resource-audience hardening, the isolated fork protocol passed: browser OIDC
+reader/editor sessions are mapped by `sub`; BFF and native OpenWebUI MCP reader
+current-user/read returned `200` and writer boundaries were enforced; editor
+completed the allowlisted update, readback and rollback. Missing/malformed and
+wrong-audience tokens returned `401`; unknown group and missing local mapping
+were denied. Stdout and `log-collector` received only redacted audit records.
+After a resource-audience or client configuration change, rerun the complete
+contract, including `scripts/e2e-resource-audience-boundary.sh`; do not carry
+the previous result forward without that evidence.
 
 The implementation covers HTTP REST. Async jobs and WebSocket authorization
 are out of scope and require a separate validation before any production use.

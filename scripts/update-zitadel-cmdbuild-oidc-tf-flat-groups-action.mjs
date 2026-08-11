@@ -1,23 +1,20 @@
 import { readFileSync } from 'node:fs';
 import { chromium } from 'playwright-core';
+import { readState } from './zitadel-cmdbuild-oidc-tf-state.mjs';
 
 const actionName = 'cmdbuild_oidc_tf_flat_groups';
 const groupClaim = 'cmdbuild_oidc_tf_groups';
-const cmdbuildUsernameClaim = 'cmdbuild_username';
+const projectId = readState('project_id');
 const actionCode = `function ${actionName}(ctx, api) {
-  const user = ctx.v1.getUser();
-  const cmdbuildUsername = user && (user.preferredLoginName || user.username);
-  if (typeof cmdbuildUsername === 'string' && cmdbuildUsername.length > 0) {
-    api.v1.claims.setClaim('${cmdbuildUsernameClaim}', cmdbuildUsername);
-  }
   if (ctx.v1.user.grants === undefined || ctx.v1.user.grants.count === 0) {
     return;
   }
   const groups = [];
   ctx.v1.user.grants.grants.forEach((grant) => {
+    if (grant.projectId !== '${projectId}') return;
     grant.roles.forEach((role) => {
       const mapped = role.match(/^cmdbuild_oidc_tf_(admin|editor|reader)$/)?.[1];
-      groups.push(mapped ?? role);
+      if (mapped) groups.push(mapped);
     });
   });
   api.v1.claims.setClaim('${groupClaim}', [...new Set(groups)]);
@@ -46,10 +43,13 @@ try {
   await page.locator('.CodeMirror').evaluate((element, value) => {
     element.CodeMirror.setValue(value);
   }, actionCode);
-  await page.waitForFunction(() => document.querySelector('.CodeMirror')?.textContent?.includes('cmdbuild_username'));
+  await page.waitForFunction((claim) => {
+    const value = document.querySelector('.CodeMirror')?.textContent ?? '';
+    return value.includes(claim) && !value.includes('cmdbuild_username');
+  }, groupClaim);
   await page.getByRole('button', { name: 'Save', exact: true }).click();
   await page.waitForTimeout(500);
-  console.log(JSON.stringify({ action: actionName, group_claim: groupClaim, cmdbuild_username_claim: cmdbuildUsernameClaim, updated: true }));
+  console.log(JSON.stringify({ action: actionName, group_claim: groupClaim, project_id_hash: projectId.slice(-8), local_cmdbuild_mapping: 'OIDC sub', updated: true }));
 } finally {
   await browser.close();
 }

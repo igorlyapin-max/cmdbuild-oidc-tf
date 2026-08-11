@@ -1,67 +1,64 @@
 # CMDBuild OIDC discovery protocol
 
-The POC does not assume that CMDBuild 4.2 accepts a ZITADEL bearer token merely because browser OIDC is enabled. Browser login, CMDBuild internal user mapping, and REST bearer-token validation are separate facts to prove.
+The POC treats browser login, local CMDBuild mapping and REST Bearer
+validation as separate facts. Browser OIDC alone is not evidence that a BFF or
+MCP may call CMDBuild REST as the same person.
 
-The POC Postgres service intentionally does **not** pre-create `cmdbuild_oidc_tf`: CMDBuild's `dbconfig create` owns database creation and demo-dump import. Pre-creating it leaves only bootstrap tables and makes patching fail.
+The POC Postgres service intentionally does **not** pre-create
+`cmdbuild_oidc_tf`: CMDBuild's `dbconfig create` owns database creation and
+demo-dump import. Pre-creating it leaves only bootstrap tables and makes
+patching fail.
 
 ## Required evidence
 
-| Check | Expected evidence | Failure interpretation |
-|---|---|---|
-| Browser OIDC | Login reaches CMDBuild UI and returns a mapped CMDBuild user | CMDBuild OIDC/module mapping is incomplete. |
-| Gateway `cmdbuild_whoami` | HTTP 200 and CMDBuild current user equals the ZITADEL caller | Native user-token forwarding works. |
-| Reader read | `cmdbuild_read_demo_cards` succeeds | Least-privilege read mapping works. |
-| Reader write | Gateway returns `group_does_not_allow_write` before CMDBuild call | Gateway group policy works. |
-| Editor write | Bounded demo update succeeds then read shows changed value | CMDBuild permits that user and write grant. |
-| BFF `/api/cmdbuild/whoami` | Same caller returned through direct no-proxy BFF | Custom-page analogue works. |
+| Check | Required result |
+|---|---|
+| Browser OIDC | Reader and editor reach CMDBuild UI, each has a mapped current session and only the matching CMDBuild role. |
+| Direct BFF | `sessions/current` returns the same immutable OIDC `sub` that identifies the local CMDBuild user. |
+| Native MCP | `cmdbuild_whoami` returns that same mapped identity. |
+| Reader | Read succeeds; bounded write is denied before a CMDBuild mutation. |
+| Editor | Bounded update, readback and rollback succeed. |
+| Negative boundary | Missing/malformed/wrong-audience tokens and an unknown group fail closed; a valid subject without a local CMDBuild mapping is rejected. |
 
-## Observed result and fail-closed rule
+## Pre-hardening observed result and fail-closed rule
 
-The isolated stock CMDBuild `4.2.0` now has `default,oauth` with the `OP_CUSTOM` OAuth module configured as a confidential ZITADEL client. A small edge compatibility route maps only the module's `/auth`, `/token`, and `/userinfo` convention to ZITADEL's actual endpoints; it never proxies CMDBuild, BFF, or custom-page traffic.
+Before the P1/P2 resource-audience hardening, on 2026-08-11 the isolated local `4.2.0-bearer.1` fork reached
+`direct-user-api-pass`. CMDBuild `default,oauth` with `OP_CUSTOM` maps the
+standard immutable OIDC `sub` to explicit local users/default groups. Reader
+and editor both completed browser authorization-code login to the internal POC
+address, reached the UI, and received current-session `200` with their matching
+CMDBuild role.
 
-The interactive `cmdbuild-oidc-tf-reader` flow still returns to the CMDBuild UI shell,
-but a post-login CMDBuild `v4/sessions/current` request returns HTTP `400`; no
-mapped local CMDBuild user or CMDBuild authorization/session value was
-observed. Browser OAuth-module mapping is therefore not proven.
+The same `sub` mapping is used by the direct Bearer filter. BFF and native
+OpenWebUI MCP forward only the current user's JWT: reader current-user/read is
+`200` and its bounded write is denied; editor update/readback/rollback passes.
+There are no Basic credentials, service accounts, copied cookies, token
+exchange, automatic provisioning or generic REST proxy in those paths. The
+fork creates a server-side CMDBuild request session only for the request
+lifecycle; its token never leaves CMDBuild.
 
-The separate source-backed local `4.2.0-bearer.1` fork changes only the REST
-resource-server path. With the BFF's current ZITADEL reader access token,
-`GET /cmdbuild/services/rest/v3/sessions/current` returns HTTP `200` and the
-existing local CMDBuild user `cmdbuild-oidc-tf-reader`. The request uses neither Basic
-credentials, a service account, copied cookies, token exchange, automatic
-provisioning, nor a reverse proxy. The fork validates the JWT and maps the
-configured `cmdbuild_username` claim to a local active user/default group;
-normal CMDBuild RBAC then applies. It creates a server-side request session
-only for the request lifecycle and deletes it before return; no session token
-is sent to the BFF.
+The observed fail-closed boundaries are: missing/malformed Bearer `401`, valid
+token against a deliberately unrelated audience `401`, valid `unassigned`
+group `403` before CMDBuild, and valid reader without a local CMDBuild user
+`401` without mutation. The ZITADEL Action emits only the flat group claim;
+there is no mutable username-claim or legacy mapping fallback.
 
-`401` and `403` are reported as `cmdbuild_rejected_forwarded_user_token`; other HTTP failures remain `cmdbuild_api_error`. Every outcome is fail-closed and must not be hidden by a local CMDBuild password, `CMDBuild-Authorization` cookie, or a service-account fallback.
-
-For stock CMDBuild, and for any fork configuration that cannot validate a
-ZITADEL access token, record:
-
-- CMDBuild exact version and authentication module;
-- endpoint and response status;
-- access-token `iss`, `aud`, and custom-group presence as redacted metadata;
-- whether a supported token-exchange/introspection configuration exists.
-
-Only after that evidence exists may a separately approved architecture consider
-an authorization bridge. Such a bridge is outside this POC.
+The isolated stock `4.2.0` image remains the `bearer-unsupported` baseline.
+The small edge route translates only CMDBuild OAuth-module `/auth`, `/token`
+and `/userinfo` conventions to ZITADEL; it never proxies CMDBuild REST, BFF,
+MCP or custom-page traffic.
 
 ## No-reverse-proxy decision
 
-The CMDBuild OAuth login experiment and the direct BFF experiment have different acceptance conditions:
+Before the current resource-audience hardening, the isolated POC met
+`direct-user-api-pass`: browser OIDC creates a mapped
+CMDBuild session and direct user-token REST calls are authorized with normal
+CMDBuild grants. A custom-page backend/BFF and native OpenWebUI MCP may use the
+direct Bearer pattern. Rerun the full matrix, including the resource-audience
+rejection/restore boundary, before carrying that conclusion forward.
 
-- `direct-user-api-pass`: browser OIDC succeeds, direct `sessions/current` with the BFF's current user token returns the matching mapped CMDBuild user, and CMDBuild grants pass reader/editor scenarios. Only this outcome permits a complete replacement of the CMDBuild session-proxy pattern.
-- `session-only`: browser OIDC establishes a mapped CMDBuild session but the direct BFF cannot authenticate to CMDBuild REST as that user. A narrow same-origin reverse proxy remains necessary when a companion backend needs the CMDBuild session.
-- `bearer-unsupported`: direct bearer authentication fails. Do not replace it with Basic credentials, a service account, copied session cookies, or a generic REST proxy.
-
-The stock result is `bearer-unsupported`. The local fork has a **partial
-direct-BFF pass**, while UI mapping remains incomplete; it is not
-`session-only` and not yet the formal `direct-user-api-pass`. A direct
-token-forwarding BFF is technically proven for the target custom-page analogue,
-but do not remove a CMDBuild/session reverse proxy from a real deployment until
-the complete protocol in
-`.agents/skills/cmdbuild-oidc-no-proxy/references/verification-protocol.md`
-passes. Store the redacted result in the matching `current-evidence.md`
-reference and update this document and the validation matrix together.
+This does not authorize a production cutover by itself. The POC callback uses
+an internal HTTP address; production still requires a protected FQDN/TLS
+callback, a perimeter review and a scoped migration of local CMDBuild users and
+grants. Do not introduce Basic, a service account, copied cookies, token
+exchange or a generic proxy as a compatibility fallback.
