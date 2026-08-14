@@ -72,7 +72,7 @@ CMDBUILD_API_BASE_URL=https://cmdb.example.org/cmdbuild \
 Затем задайте значения из разделов IdP ниже: `CMDBUILD_BEARER_ISSUER`,
 `CMDBUILD_BEARER_JWKS_URL`, `CMDBUILD_RESOURCE_AUDIENCE`, audit sink и путь к
 его HMAC key. При private CA задайте `CMDBUILD_CA_BUNDLE` — файл CA bundle,
-которому доверяет shell host. Helper принимает только HTTPS, `RS256` и profile
+которому доверяет shell host. Script `scripts/configure-existing-cmdbuild-bearer-auth.sh` принимает только HTTPS, `RS256` и profile
 `production`, проверяет совпадение audience, применяет keys, выполняет reload
 и не выводит password/JWT.
 

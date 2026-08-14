@@ -55,7 +55,9 @@ sha256sum -c artifacts/cmdbuild-4.2.0-bearer.1.war.sha256
 
 ### Tomcat / systemd
 
-Остановите service, затем выполните atomic WAR swap. Helper откажется заменять running service и сохранит предыдущий WAR в `backup/`.
+Остановите service, затем выполните `scripts/apply-existing-cmdbuild-patch.sh`.
+Этот script откажется заменять running service, проверит checksum, сохранит
+предыдущий WAR в `backup/` и заменит WAR через временный файл.
 
 ```bash
 CMDBUILD_HOME=/opt/cmdbuild/tomcat/webapps \
@@ -124,7 +126,10 @@ CMDBUILD_BOOTSTRAP_PASSWORD_FILE=/secure/path/cmdbuild-admin-password \
   scripts/configure-cmdbuild-bearer-auth.sh
 ```
 
-Helper использует authenticated REST v3 `system/config` API CMDBuild и временный netrc file с mode `0600` внутри container; credentials и JWT не выводятся. Убедитесь, что diagnostic mode по умолчанию `off`, включайте `basic` только для временной диагностики и держите external HMAC-protected audit sink готовым.
+`scripts/configure-cmdbuild-bearer-auth.sh` использует authenticated REST v3
+`system/config` API CMDBuild и временный netrc file с mode `0600` внутри
+container; credentials и JWT не выводятся. Убедитесь, что diagnostic mode по
+умолчанию `off`, включайте `basic` только для временной диагностики и держите external HMAC-protected audit sink готовым.
 
 ## 6. Настройка UI/BFF
 

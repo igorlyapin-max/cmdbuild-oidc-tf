@@ -31,7 +31,7 @@ SBOM/attestation и результат `npm run verify:cmdbuild-bearer-artifact`
 
 Для Tomcat/systemd остановите service, выполните atomic WAR swap через
 `scripts/apply-existing-cmdbuild-patch.sh`, затем запустите service и проверьте
-public health/readiness route и deployed checksum. Helper сохраняет previous WAR
+public health/readiness route и deployed checksum. `scripts/apply-existing-cmdbuild-patch.sh` сохраняет previous WAR
 в `backup/` и отказывается менять running service. Для rollback используйте
 `scripts/rollback-existing-cmdbuild-patch.sh`, затем подтвердите previous runtime.
 

@@ -24,8 +24,10 @@ checksum WAR либо immutable image digest. Это связывает рабо
 ## Tomcat / systemd
 
 Выберите этот путь, если CMDBuild работает как WAR под Tomcat/systemd.
-Остановите CMDBuild и запустите atomic helper: он откажется работать с active
-service, проверит checksum и сохранит prior WAR в `backup/` до замены.
+Остановите CMDBuild и запустите `scripts/apply-existing-cmdbuild-patch.sh`:
+script откажется работать с active service, проверит checksum и сохранит prior
+WAR в `backup/` до замены. Замена выполняется через временный файл, поэтому
+Tomcat увидит либо прежний целый WAR, либо новый целый WAR.
 
 ```bash
 CMDBUILD_HOME=/opt/cmdbuild/tomcat/webapps \
