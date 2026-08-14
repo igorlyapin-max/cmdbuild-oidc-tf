@@ -2,6 +2,10 @@
 
 Language: [English](configuration.md) | [Русский](configuration.ru.md)
 
+Use the [end-to-end FAM example](fam-example.md) for one internally consistent
+fictional value set. ZITADEL remains an alternative issuer, not a second issuer
+for that FAM deployment.
+
 ## 1. Common OIDC contract
 
 Select exactly one issuer per CMDBuild deployment: ZITADEL or FAM/MFA+ 1.17.

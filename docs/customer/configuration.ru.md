@@ -8,6 +8,8 @@ UI+BFF и OpenWebUI получают его для текущего пользо
 его группы и права. Настраивайте разделы строго сверху вниз: следующий раздел
 использует значения, созданные в предыдущем.
 
+Согласованные fictional values приведены в [сквозном примере FAM](fam-example.ru.md).
+
 ## 1. Общий OIDC-контракт
 
 Для одного CMDBuild deployment выберите ровно один issuer: ZITADEL или
@@ -79,8 +81,8 @@ CMDBUILD_API_BASE_URL=https://cmdb.example.org/cmdbuild \
 ```bash
 CMDBUILD_BOOTSTRAP_PASSWORD_FILE=/secure/path/cmdbuild-admin-password \
 CMDBUILD_API_BASE_URL=https://cmdb.example.org/cmdbuild \
-CMDBUILD_BEARER_ISSUER=https://idp.example.org \
-CMDBUILD_BEARER_JWKS_URL=https://idp.example.org/.well-known/jwks.json \
+CMDBUILD_BEARER_ISSUER=https://fam.example.org \
+CMDBUILD_BEARER_JWKS_URL=<JWKS-URL-из-FAM-discovery> \
 CMDBUILD_RESOURCE_AUDIENCE=cmdbuild-api \
 CMDBUILD_BEARER_AUDIENCE=cmdbuild-api \
 CMDBUILD_BEARER_AUDIT_SINK_URL=https://audit.example.org/v1/logs \
@@ -99,7 +101,12 @@ OpenWebUI native MCP. В мастере **Основные настройки ->
 -> Настройки аутентификации -> Завершение** задайте отдельное имя, точный
 callback, public client, Authorization Code + PKCE `S256`, `JSON Web Token`,
 `RS256`, dedicated CMDBuild resource audience и `Audience type=Строка`.
+Например, для BFF задайте callback `https://bff.example.org/oauth/callback`,
+audience `cmdbuild-api` и `Audience type=Строка`. Это же `cmdbuild-api` затем
+задаётся в CMDBuild Bearer configuration.
 
+Для отдельного MCP application задайте callback
+`https://openwebui.example.org/oauth/clients/mcp:cmdbuild-mcp/callback`.
 В **Настройки**, **Scopes**, **Модель доступа**, **Сертификаты** проверьте
 stable `sub`, minimum scopes, approved users/groups, signing key и discovery/JWKS.
 Настройте flat group claim только если его читает BFF/OpenWebUI. Не настраивайте
@@ -107,6 +114,7 @@ FAM federation только ради создания этих applications.
 
 ## 4. ZITADEL
 
+ZITADEL — альтернативный profile и не должен быть вторым issuer в FAM example.
 В **Projects** создайте application project с roles `reader`, `editor` и
 non-accepted `unassigned`. Создайте отдельный resource project; его ID —
 CMDBuild audience. В **Actions** attach Complement Token Action к **Pre Userinfo
@@ -118,7 +126,8 @@ HTTPS redirect URLs.
 
 ## 5. UI+BFF и OpenWebUI
 
-Настройте UI+BFF: discovery URL выбранного issuer, public PKCE BFF client ID,
+В FAM example UI+BFF использует issuer `https://fam.example.org`, callback
+`https://bff.example.org/oauth/callback` и scope `cmdbuild-api`. Настройте UI+BFF: discovery URL выбранного issuer, public PKCE BFF client ID,
 точный callback, trusted CA bundle и resource scope. BFF обязан без изменения
 передавать access token текущего пользователя только в CMDBuild REST.
 
@@ -126,8 +135,9 @@ HTTPS redirect URLs.
 OIDC issuer/client/scopes/base URL. После успешного SSO откройте **Admin Panel
 -> Users and Groups -> Groups** и map/reconcile `reader`/`editor`. Затем
 **External Tools** (или **Tools/MCP Servers**) -> **Add Connection**, выберите
-`MCP` с `OAuth 2.1`, укажите exact protected-resource URL, discovery metadata,
-native-MCP client и callback. Выдайте только allowlisted CMDBuild tools группам
+`MCP` с `OAuth 2.1`, укажите protected-resource URL `https://mcp.example.org`,
+server ID `cmdbuild-mcp`, discovery metadata, native-MCP client и callback
+`https://openwebui.example.org/oauth/clients/mcp:cmdbuild-mcp/callback`. Выдайте только allowlisted CMDBuild tools группам
 `reader` и `editor`, но не глобально.
 
 Далее выполните [приёмку](acceptance.ru.md).

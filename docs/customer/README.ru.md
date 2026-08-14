@@ -25,6 +25,9 @@ Browser SSO CMDBuild, SAML и `OP_CUSTOM` находятся вне scope это
 Выполняйте инструкции по порядку: каждая роль передаёт следующей проверяемые
 значения `issuer`, JWKS URL, audience, `sub`, callbacks и group claim.
 
+Используйте [сквозной пример FAM deployment](fam-example.ru.md): он показывает,
+как один набор значений проходит от FAM до CMDBuild и OpenWebUI MCP.
+
 1. [Применить patch](deployment.ru.md) к существующему CMDBuild в Tomcat/systemd или Docker/Compose.
 2. [Настроить CMDBuild, IdP и приложения](configuration.ru.md): FAM/MFA+ 1.17, ZITADEL, UI+BFF и OpenWebUI native MCP.
 3. Выполнить customer [checklist приёмки и rollback](acceptance.ru.md).
