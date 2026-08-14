@@ -1,8 +1,11 @@
 node_modules/
 dist/
+.codex/
+AGENTS.md
 .env
 secrets/
 runtime/
 logs/
 vendor/
 artifacts/
+.cmdbuild-bearer-it-*
