@@ -1,5 +1,7 @@
 # CMDBuild 4.2 Bearer resource-server fork
 
+Language: [English](cmdbuild-bearer-fork.md) | [Русский](cmdbuild-bearer-fork.ru.md)
+
 ## Scope and identity boundary
 
 This POC builds a maintained local fork from the exact vendor archive
@@ -11,12 +13,12 @@ existing `default,oauth` browser module.
 
 For every valid request CMDBuild:
 
-1. verifies the JWT signature against the configured JWKS and exactly one
-   configured asymmetric JWS algorithm;
+1. verifies the JWT signature against the configured JWKS and the fixed
+   `RS256` JWS algorithm;
 2. verifies `iss`, that `aud` contains the configured audience, `exp`, `nbf`,
    `iat`, and a bounded clock skew;
-3. reads one configured string claim (the fork default is `preferred_username`; this POC configures immutable `sub`), requires
-   an existing active CMDBuild user with a default group, and creates a
+3. maps only the standard immutable OIDC `sub`, requires an existing active,
+   non-service CMDBuild user with a default group, and creates a
    server-side CMDBuild session only for the request lifecycle; it is deleted
    before the response returns and its token never leaves the server;
 4. executes normal CMDBuild RBAC for that local user's group and grants.
@@ -57,10 +59,10 @@ CMDBUILD_BEARER_ENABLED=true
 CMDBUILD_BEARER_ISSUER=http://192.168.202.35:8084
 CMDBUILD_BEARER_JWKS_URL=http://192.168.202.35:8084/oauth/v2/keys
 # A dedicated ZITADEL project resource, never an OIDC client ID.
-CMDBUILD_RESOURCE_PROJECT_ID=<resource-project-id>
-CMDBUILD_RESOURCE_AUDIENCE=<resource-project-id>
+CMDBUILD_RESOURCE_AUDIENCE=<resource-audience>
+OIDC_RESOURCE_SCOPE=<resource-scope>
 CMDBUILD_BEARER_AUDIENCE=<resource-project-id>
-CMDBUILD_BEARER_USER_CLAIM=sub
+CMDBUILD_BEARER_DEPLOYMENT_PROFILE=poc-http
 CMDBUILD_BEARER_CLOCK_SKEW_SECONDS=30
 CMDBUILD_BEARER_ALLOWED_JWS_ALGORITHM=RS256
 CMDBUILD_BEARER_AUDIT_SINK_URL=http://log-collector:18101/v1/logs
@@ -68,15 +70,17 @@ CMDBUILD_BEARER_AUDIT_HMAC_KEY_FILE=/run/secrets/log_collector_hmac_key
 CMDBUILD_BEARER_DIAGNOSTIC_LEVEL=off
 ```
 
-`CMDBUILD_RESOURCE_PROJECT_ID`, `CMDBUILD_RESOURCE_AUDIENCE`, and
-`CMDBUILD_BEARER_AUDIENCE` must be the same dedicated resource-project ID and
-must be present in the forwarded **access token** audience, not an ID token or
-a client ID. This POC maps the standard immutable OIDC `sub`
+`CMDBUILD_RESOURCE_AUDIENCE` and `CMDBUILD_BEARER_AUDIENCE` must be the same
+dedicated resource audience and must be present in the forwarded **access
+token**, not an ID token or a client ID. `OIDC_RESOURCE_SCOPE` is the
+IdP-configured scope requested by BFF and advertised by MCP. This POC maps the standard immutable OIDC `sub`
 directly to an explicitly created local CMDBuild user/default group. The
 ZITADEL Complement Token Action emits only `cmdbuild_oidc_tf_groups`; it does
 not create CMDBuild users or grants and must not introduce a mutable
-username-claim fallback. For FAM, set issuer, JWKS URL, audience and allowed
-asymmetric algorithm to its documented values. Use HTTPS outside this POC.
+username-claim fallback. For FAM, set issuer, JWKS URL and audience to its
+documented values. `production` is the default
+Bearer deployment profile and requires HTTPS issuer/JWKS URLs; `poc-http` is
+the explicit isolated-test exception. Use HTTPS outside this POC.
 
 ```bash
 scripts/prepare-runtime.sh
@@ -89,6 +93,21 @@ The configuration script refuses placeholders, a mismatched resource audience,
 and an unreadable audit HMAC key; it never prints credentials or JWTs. Bearer authentication is disabled by default. `diagnosticLevel` accepts
 `off`, `basic`, and temporary `verbose`; diagnostic records contain neither
 raw identity values nor credentials.
+
+## IdP-neutral patch conformance
+
+`npm run verify:cmdbuild-bearer-artifact` rebuilds the patched image from the
+checksum-verified vendor source and verifies its provenance labels.
+`npm run test:cmdbuild-bearer:integration` starts a separate short-lived
+CMDBuild system with an internal RS256/JWKS fixture; it is not an IdP emulator
+for browser login and does not access ZITADEL, FAM, OpenWebUI or persistent POC
+volumes. It proves direct Bearer behaviour with a mapped local `sub`, exact
+issuer/audience, expiry/time checks, signature/algorithm rejection, JWKS key
+rotation, mixed-credential rejection, inactive/service/no-default-group users,
+session-token non-leakage and the HMAC-protected audit sink.
+
+Passing this gate is `patch-conformance-pass`, not `direct-user-api-pass`: the
+latter additionally requires the selected live IdP and browser/BFF/MCP matrix.
 
 Bootstrap the disposable mapping separately. The preferred administrator
 password input is a secret-mounted file; the `CMDBUILD_BOOTSTRAP_PASSWORD`
@@ -116,9 +135,11 @@ loopback. It rejects unsigned records, rotates local files, and reports
 non-writable storage as not ready. Failure of the audit sink never authenticates
 a request and never recursively logs an outbound failure.
 
-The setup script also selects CMDBuild's built-in `logger.type=stdout` mode.
-This keeps the ordinary CMDBuild structured pipeline on stdout while retaining
-the redacted audit sink as a second operational delivery point.
+CMDBuild's ordinary logging remains controlled by its supported deployment
+logging configuration. The Bearer fork emits its own redacted audit records to
+the configured CMDBuild logger and, when configured, to the signed audit sink.
+The deployment acceptance test must prove both routes; configuration alone is
+not evidence.
 The fork also treats an `Authorization: Bearer` value as non-legacy in request
 tracking and masks credential-bearing headers and all cookie values in trace
 diagnostics; neither the JWT nor a legacy credential is logged.

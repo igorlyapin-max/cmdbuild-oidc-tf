@@ -1,5 +1,7 @@
 # CMDBuild OIDC discovery protocol
 
+Language: [English](cmdbuild-oidc-discovery.md) | [Русский](cmdbuild-oidc-discovery.ru.md)
+
 The POC treats browser login, local CMDBuild mapping and REST Bearer
 validation as separate facts. Browser OIDC alone is not evidence that a BFF or
 MCP may call CMDBuild REST as the same person.

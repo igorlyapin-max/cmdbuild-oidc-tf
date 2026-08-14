@@ -1,5 +1,7 @@
 # Naming and state migration: `idpTest` to `cmdbuild-oidc-tf`
 
+Language: [English](rename-migration.md) | [Русский](rename-migration.ru.md)
+
 Performed on 2026-08-10. This record is the sole local reference to the former POC identifiers; it exists to define rollback, not to provide a legacy runtime alias.
 
 ## Active identity

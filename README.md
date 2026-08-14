@@ -1,5 +1,12 @@
 # cmdbuild-oidc-tf: OIDC, group claims, MCP token forwarding
 
+Language: [English](README.md) | [Русский](README.ru.md)
+
+Customer deployment guidance for the FAM-only API POC is in
+[customer FAM POC runbook](docs/customer-fam-poc-runbook.md) and its
+[execution checklist](docs/customer-fam-poc-checklist.md). Native CMDBuild
+browser UI/SAML is explicitly outside that POC scope.
+
 Изолированный POC для проверки авторизации приложений через существующий ZITADEL:
 
 - OpenWebUI работает через OIDC; local password form отключена;
@@ -94,6 +101,17 @@ MCP gateway + BFF -- structured redacted logs --> local log collector :18101 -->
    docker compose --env-file .env -f compose.yml ps
    ```
 
+   The IdP-neutral Bearer patch gates are separate from the live ZITADEL POC:
+
+   ```bash
+   npm run verify:cmdbuild-bearer-artifact
+   npm run test:cmdbuild-bearer:integration
+   ```
+
+   The integration command starts an isolated temporary Docker project with a
+   local RS256/JWKS fixture. It never uses ZITADEL, OpenWebUI, FAM or the POC
+   volumes, and deletes its own project and volumes after the result.
+
 The first CMDBuild initialization can take several minutes. Its data volumes are `cmdbuild-oidc-tf_cmdbuild_db` and `cmdbuild-oidc-tf_logs`; they are distinct from the rollback volumes of the prior POC and from the existing CMDBuild stack.
 
 ## Guarantees and deliberate limits
@@ -112,5 +130,11 @@ The first CMDBuild initialization can take several minutes. Its data volumes are
 - OpenWebUI has a stable `WEBUI_SECRET_KEY` Docker secret. Its first rollout clears only stale encrypted `oauth_session` cache rows; users must sign in again. This key must never be rotated casually because it encrypts OAuth sessions and MCP OAuth client data.
 - HTTP is intentional for the current private test host only. Production deployment requires HTTPS, secure cookies, a hardened external log sink, and a secrets manager.
 
-See [entry points](docs/entrypoints.md), the [administrator runbook](docs/administrator-runbook.md), [CMDBuild OIDC discovery](docs/cmdbuild-oidc-discovery.md), and the [validation matrix](docs/validation-matrix.md).
+See [entry points](docs/entrypoints.md), the POC [administrator runbook](docs/administrator-runbook.md), [CMDBuild OIDC discovery](docs/cmdbuild-oidc-discovery.md), and the [validation matrix](docs/validation-matrix.md).
 The completed naming/data cutover and rollback boundary are recorded in [rename migration](docs/rename-migration.md).
+
+For an already deployed CMDBuild system, use the separate [production patch and
+OIDC runbook](docs/production-cmdbuild-oidc-runbook.md). It covers verified
+artifact delivery, Tomcat/systemd and Docker rollback, generic IdP requirements,
+ZITADEL and FAM/MFA+ 1.17 console examples, and CMDBuild Administration Module
+configuration. It does not promote the isolated POC as a production result.

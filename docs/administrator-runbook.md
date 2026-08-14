@@ -1,7 +1,12 @@
 # Administrator runbook
 
+Language: [English](administrator-runbook.md) | [Русский](administrator-runbook.ru.md)
+
 This runbook is for the isolated `cmdbuild-oidc-tf` POC. It has no production
-credentials or fallback authentication paths.
+credentials or fallback authentication paths. For an existing production
+CMDBuild installation, use [production patch and OIDC runbook](production-cmdbuild-oidc-runbook.md)
+instead; the POC's HTTP addresses, Compose build path and historical E2E result
+are not a production change procedure.
 
 ## ZITADEL
 
@@ -54,9 +59,11 @@ credentials or fallback authentication paths.
 1. Set `CMDBUILD_BIND_HOST` and `CMDBUILD_BASE_URL` to the same approved
    internal address. `CMDBUILD_BASE_URL` must not stay loopback because BFF and
    gateway use host networking.
-2. Set `CMDBUILD_BEARER_USER_CLAIM=sub`; set the configured Bearer audience
-   equal to the dedicated resource-project ID requested by forwarded access
-   tokens. An ID token for a client does not satisfy this contract.
+2. Bearer maps only immutable `sub`; it has no configurable username claim.
+   Set `CMDBUILD_BEARER_DEPLOYMENT_PROFILE=poc-http` only for this isolated
+   POC. Set the configured Bearer audience equal to the dedicated
+   resource-project ID requested by forwarded access tokens. An ID token for a
+   client does not satisfy this contract.
 3. Provision explicit disposable local reader/editor users and grants. This is
    the only admin-bootstrap path; BFF and MCP never use its password.
 

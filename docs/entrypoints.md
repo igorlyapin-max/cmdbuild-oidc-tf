@@ -1,5 +1,7 @@
 # Entry points and credentials
 
+Language: [English](entrypoints.md) | [Русский](entrypoints.ru.md)
+
 The table gives every operator entry point. Password values are intentionally never printed; use the indicated secret location or the organization secret store.
 
 | Surface | URL | Login | Password source / status |

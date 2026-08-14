@@ -1,5 +1,7 @@
 # Validation matrix
 
+Language: [English](validation-matrix.md) | [Русский](validation-matrix.ru.md)
+
 ## Baseline and runtime
 
 | Item | Result | Evidence |
@@ -7,6 +9,7 @@
 | TypeScript typecheck and tests | pass | `npm run typecheck`; `npm test` |
 | Isolated Compose syntax | pass | `docker compose --env-file .env -f compose.yml config --quiet` |
 | Patched CMDBuild image build | pass | clean vendor-archive patch dry-run; Maven `BUILD SUCCESS`; image labels contain source and patch SHA-256. |
+| IdP-neutral patch conformance | pending first run | `npm run test:cmdbuild-bearer:integration` uses an isolated RS256/JWKS fixture; it does not claim live-IdP/browser proof. |
 | Local CMDBuild fork runtime | pending recreate | Do not recreate with a placeholder audience; first capture rollback, provision the resource audience, then configure CMDBuild. |
 | Diagnostics and external log point | local smoke pass / runtime pending | structured stdout plus redacted `log-collector`; signed record `202`, unsigned `401`; runtime restart remains pending resource configuration. |
 | BFF write default | pass | recreated runtime has `BFF_POC_WRITE_ENABLED=false`; removed legacy GET mutation route returns `404` |
@@ -28,6 +31,11 @@
 | Legacy mutable identity claim | removed | ZITADEL Action emits only `cmdbuild_oidc_tf_groups`; no `cmdbuild_username` compatibility mapping remains. |
 
 ## Decision
+
+`patch-conformance-pass` means that the patched CMDBuild resource-server
+filter passes the isolated local issuer matrix. It is deliberately narrower
+than `direct-user-api-pass` and is the maximum evidence available before a
+selected production IdP exists.
 
 `direct-user-api-pass` was proven for the pre-hardening isolated POC. The
 resource-audience/client/collector hardening changes require a full rerun before

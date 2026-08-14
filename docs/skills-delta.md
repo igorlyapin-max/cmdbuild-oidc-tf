@@ -1,5 +1,7 @@
 # Candidate global-skill updates after POC evidence
 
+Language: [English](skills-delta.md) | [Русский](skills-delta.ru.md)
+
 POC evidence now exists for OpenWebUI SSO/group sync, native Streamable HTTP MCP authorization, CMDBuild browser OIDC mapping, and direct current-user Bearer acceptance. Do **not** promote these notes to global skills yet: the proof uses an isolated internal HTTP POC and needs a separate production TLS/FQDN deployment before it becomes reusable operational guidance.
 
 1. `mcp-integration-contracts`: add OpenWebUI native MCP OAuth guidance that distinguishes identity continuity from byte-identical SSO-token forwarding, requires protected-resource metadata, and disallows automatic tool enablement.
