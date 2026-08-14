@@ -1,13 +1,15 @@
 # Применение CMDBuild Bearer patch
 
-Language: [English](deployment.md) | [Русский](deployment.ru.md)
+Язык: [English](deployment.md) | [Русский](deployment.ru.md)
 
 ## Предварительные условия
 
-Patch применим только к CMDBuild `4.2.0`. До изменения назначьте change и
-rollback owner, проверьте восстановление database backup, зафиксируйте running
-WAR/image digest и authentication configuration, подготовьте предыдущий artifact
-для rollback. Собирайте в approved CI, но не на production host.
+Patch заменяет только application artifact CMDBuild `4.2.0`; database schema и
+данные не меняются напрямую. Поэтому его можно безопасно откатить только когда
+предыдущий artifact, backup и исходная authentication configuration зафиксированы.
+До изменения назначьте владельцев изменения и rollback, проверьте восстановление
+database backup, зафиксируйте running WAR/image digest и соберите artifact в
+approved CI, но не на production host.
 
 ```bash
 npm run verify:cmdbuild-bearer-artifact
@@ -16,13 +18,14 @@ sha256sum -c artifacts/cmdbuild-4.2.0-bearer.1.war.sha256
 ```
 
 В change record сохраните Git revision, vendor-source SHA-256, patch SHA-256 и
-checksum WAR либо immutable image digest. Mutable registry tag не является
-artifact identity.
+checksum WAR либо immutable image digest. Это связывает работающий CMDBuild с
+проверенным исходным patch; mutable registry tag не является artifact identity.
 
 ## Tomcat / systemd
 
-Остановите CMDBuild и запустите atomic helper. Он откажется работать с active
-service, проверит checksum и сохранит prior WAR в `backup/`.
+Выберите этот путь, если CMDBuild работает как WAR под Tomcat/systemd.
+Остановите CMDBuild и запустите atomic helper: он откажется работать с active
+service, проверит checksum и сохранит prior WAR в `backup/` до замены.
 
 ```bash
 CMDBUILD_HOME=/opt/cmdbuild/tomcat/webapps \
@@ -40,6 +43,7 @@ approved authentication snapshot.
 
 ## Docker / Compose
 
+Выберите этот путь, если customer CMDBuild уже запускается из image.
 Продвигайте approved immutable image digest. Измените только CMDBuild `image:`
 reference в deployment manifest заказчика, сохраните database/application volumes
 и пересоздайте только CMDBuild workload. Проверьте running digest и health/readiness

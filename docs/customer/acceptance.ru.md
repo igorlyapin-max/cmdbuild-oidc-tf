@@ -1,8 +1,13 @@
 # Checklist приёмки и rollback заказчика
 
-Language: [English](acceptance.md) | [Русский](acceptance.ru.md)
+Язык: [English](acceptance.md) | [Русский](acceptance.ru.md)
 
-Выполняйте checklist на approved HTTPS environment заказчика. Фиксируйте только artifact digest, date, endpoint, HTTP status, token fingerprint, subject hash, mapped group и grant outcome. Никогда не записывайте raw credentials, tokens, cookies, authorization codes или user data.
+Цель checklist — доказать не доступность отдельных сервисов, а сквозную
+авторизацию пользователя без service account и лишних прав. Выполняйте его на
+approved HTTPS environment заказчика. Фиксируйте только artifact digest, дату,
+endpoint, HTTP status, token fingerprint, subject hash, mapped group и grant
+outcome. Никогда не записывайте raw credentials, tokens, cookies,
+authorization codes или user data.
 
 | Проверка | Ожидаемый результат |
 | --- | --- |

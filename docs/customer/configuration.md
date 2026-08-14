@@ -41,17 +41,22 @@ REST v3 `system/config` procedure:
 | `org.cmdbuild.auth.bearer.clockSkewSeconds` | approved bounded value |
 | audit parameters | approved sink, readable HMAC-key file, diagnostics `off` |
 
-For the repository Compose contour, put non-secret values in protected `.env`,
-keep the administrator password in a mode-`0600` external file, then run:
+### Reproducible command path
+
+Use this path when the approved change procedure may call CMDBuild REST v3. It
+targets an existing CMDBuild through its public HTTPS URL; it does not use
+repository Compose, Docker, or a POC host. First capture a redacted snapshot:
 
 ```bash
 CMDBUILD_BOOTSTRAP_PASSWORD_FILE=/secure/path/cmdbuild-admin-password \
-  scripts/configure-cmdbuild-bearer-auth.sh
+CMDBUILD_API_BASE_URL=https://cmdb.example.org/cmdbuild \
+  scripts/capture-existing-cmdbuild-bearer-config.sh > cmdbuild-bearer-before.redacted.json
 ```
 
-The helper reloads CMDBuild configuration without printing the password or a
-JWT. In a customer topology use the same keys through the site's approved
-administration method; do not run the POC Compose helper against another host.
+Set the IdP values below, then run `scripts/configure-existing-cmdbuild-bearer-auth.sh`.
+It requires HTTPS, accepts an optional `CMDBUILD_CA_BUNDLE` for a private CA,
+rejects placeholders and audience mismatch, reloads configuration, and never
+prints a password or JWT. The POC Compose helper is verification-only.
 
 ## 3. FAM/MFA+ 1.17
 
