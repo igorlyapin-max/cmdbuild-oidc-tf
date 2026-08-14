@@ -1,6 +1,10 @@
-# Production runbook: CMDBuild Bearer patch and OIDC
+# Verification reference: CMDBuild Bearer patch and OIDC
 
 Language: [English](production-cmdbuild-oidc-runbook.md) | [Русский](production-cmdbuild-oidc-runbook.ru.md)
+
+> Detailed technical reference retained from verification work. Customer
+> operators follow the [customer deployment kit](customer/README.md); browser
+> SSO material below is outside the delivered API scope.
 
 This document describes the controlled deployment of the CMDBuild `4.2.0`
 Bearer patch on an already deployed CMDBuild system and the OIDC configuration

@@ -2,12 +2,15 @@
 
 Language: [English](README.md) | [Русский](README.ru.md)
 
-Руководство по развёртыванию customer POC только для API с FAM находится в
-[runbook customer FAM POC](docs/customer-fam-poc-runbook.ru.md) и
-[checklist выполнения](docs/customer-fam-poc-checklist.ru.md). Штатный browser UI
-CMDBuild и SAML явно не входят в scope этого POC.
+Для существующего CMDBuild заказчика начинайте с
+[customer deployment kit](docs/customer/README.ru.md): patch, настройка
+CMDBuild API, FAM/ZITADEL, UI+BFF и OpenWebUI MCP. Штатный browser UI CMDBuild
+и SAML находятся вне delivered API scope.
 
-Изолированный POC проверяет авторизацию приложений через существующий ZITADEL:
+## Repository verification environment (не customer deployment)
+
+Ниже приведён isolated POC как regression evidence для patch, а не blueprint
+окружения заказчика:
 
 - OpenWebUI работает через OIDC, local password form отключена;
 - OpenWebUI RBAC и доступ к MCP определяются плоским custom claim `cmdbuild_oidc_tf_groups`;
@@ -131,12 +134,5 @@ rollback volumes предыдущего POC и существующего CMDBui
 - OpenWebUI использует стабильный Docker secret `WEBUI_SECRET_KEY`. При первом rollout очищаются только stale encrypted `oauth_session`; пользователи должны войти снова. Не ротируйте этот key без необходимости: он шифрует OAuth sessions и MCP OAuth client data.
 - HTTP предназначен только для текущего private test host. Production требует HTTPS, secure cookies, hardened external log sink и secrets manager.
 
-См. [entry points](docs/entrypoints.ru.md), POC [administrator runbook](docs/administrator-runbook.ru.md),
-[CMDBuild OIDC discovery](docs/cmdbuild-oidc-discovery.ru.md) и [validation matrix](docs/validation-matrix.ru.md).
-Завершённый naming/data cutover и rollback boundary записаны в [rename migration](docs/rename-migration.ru.md).
-
-Для уже развёрнутого CMDBuild используйте отдельный [production patch and OIDC
-runbook](docs/production-cmdbuild-oidc-runbook.ru.md). Он описывает verified
-artifact delivery, Tomcat/systemd и Docker rollback, общие требования IdP,
-примеры консолей ZITADEL и FAM/MFA+ 1.17, а также настройку CMDBuild
-Administration Module. Он не выдаёт isolated POC за production result.
+Customer deployment начинается с [customer deployment kit](docs/customer/README.ru.md).
+Isolated POC material сохранён только в [verification appendix](docs/verification/README.ru.md).

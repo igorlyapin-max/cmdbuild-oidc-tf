@@ -1,6 +1,10 @@
-# Production runbook: CMDBuild Bearer patch и OIDC
+# Verification reference: CMDBuild Bearer patch и OIDC
 
 Language: [English](production-cmdbuild-oidc-runbook.md) | [Русский](production-cmdbuild-oidc-runbook.ru.md)
+
+> Detailed technical reference, сохранённый из verification work. Customer
+> operators следуют [customer deployment kit](customer/README.ru.md); browser
+> SSO material ниже находится вне delivered API scope.
 
 Этот runbook описывает безопасное применение Bearer patch к уже развёрнутому
 CMDBuild и настройку OIDC для BFF и native MCP. Он не превращает isolated POC
